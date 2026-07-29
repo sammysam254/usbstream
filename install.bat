@@ -18,11 +18,23 @@ set "ERRORS=0"
 set "TOOLS_DIR=%USERPROFILE%\usbstream-tools"
 set "SCRIPT_DIR=%~dp0"
 
-:: If running from a temp/zip extraction, use the git repo location instead
+:: If running from a temp/zip extraction, download the latest code from GitHub
 echo %SCRIPT_DIR% | findstr /i "Temp\\7z" >nul
 if %errorlevel%==0 (
-    set "SCRIPT_DIR=c:\dedvices\usbstream\"
-    echo  [INFO] Detected temp extraction - using repo path: %SCRIPT_DIR%
+    set "REPO_DIR=%TOOLS_DIR%\usbstream"
+    echo  [INFO] Detected temp extraction - downloading latest code from GitHub...
+    if not exist "%REPO_DIR%" mkdir "%REPO_DIR%"
+    curl.exe -L --silent -o "%TEMP%\usbstream_latest.zip" "https://github.com/sammysam254/usbstream/archive/refs/heads/main.zip"
+    if !errorlevel! neq 0 (
+        echo  [WARN] GitHub download failed - using bundled copy.
+    ) else (
+        powershell -Command "Expand-Archive -Force '%TEMP%\usbstream_latest.zip' '%TEMP%\usbstream_extract'" >nul 2>&1
+        robocopy "%TEMP%\usbstream_extract\usbstream-main" "%REPO_DIR%" /E /IS /IT /NFL /NDL /NJH /NJS >nul 2>&1
+        rmdir /s /q "%TEMP%\usbstream_extract" >nul 2>&1
+        del "%TEMP%\usbstream_latest.zip" >nul 2>&1
+        echo  [INFO] Latest code installed to: %REPO_DIR%
+    )
+    set "SCRIPT_DIR=%REPO_DIR%\"
 )
 
 echo.
