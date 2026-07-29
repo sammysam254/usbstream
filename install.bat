@@ -150,12 +150,16 @@ set "URL_FILE=%TEMP%\usbstream_url.txt"
 if exist "%URL_FILE%" del "%URL_FILE%" >nul 2>&1
 if exist "%SERVER_LOG%" del "%SERVER_LOG%" >nul 2>&1
 
-:: Launch server in a new visible window, redirect output to log file
-:: Keep window open on error with || pause
-start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && (python server.py > "%SERVER_LOG%" 2>&1 || (echo. && echo SERVER CRASHED - Check error above && pause))"
+:: Launch server with a PowerShell wrapper that shows output AND logs it
+set "LAUNCH_SCRIPT=%TEMP%\usbstream_launch.ps1"
+echo $env:PYTHONUNBUFFERED='1' > "%LAUNCH_SCRIPT%"
+echo $proc = Start-Process -FilePath 'python' -ArgumentList 'server.py' -WorkingDirectory '%SCRIPT_DIR%' -NoNewWindow -PassThru -RedirectStandardOutput '%SERVER_LOG%' -RedirectStandardError '%SERVER_LOG%' >> "%LAUNCH_SCRIPT%"
+echo Get-Content '%SERVER_LOG%' -Wait -Tail 50 >> "%LAUNCH_SCRIPT%"
 
-echo   Server window opened. Waiting for cloudflared tunnel URL...
-echo   (this takes ~10 seconds)
+start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && powershell -ExecutionPolicy Bypass -File "%LAUNCH_SCRIPT%""
+
+echo   Server window opened. Watching for cloudflared tunnel URL...
+echo   (checking server log file every 2 seconds)
 echo.
 
 :: Poll the log file for the trycloudflare URL - wait up to 30 seconds
