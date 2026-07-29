@@ -5,12 +5,19 @@ title USB Stream - Auto Installer
 :: ============================================================
 ::  USB Stream Auto Installer
 ::  NO admin rights required - installs to %USERPROFILE%\usbstream-tools
-::  Uses curl.exe (built-in Win10+) for fast downloads with progress bar
+::  Uses curl.exe for fast downloads with progress bar
 ::  Checks: Python, pip, websockets, ADB, scrcpy, FFmpeg, cloudflared
 :: ============================================================
 
+:: Prevent any accidental early exit from errorlevel cascades
+if "%1"=="--child" goto :RUN
+cmd /k "%~f0" --child
+exit
+
+:RUN
 set "ERRORS=0"
 set "TOOLS_DIR=%USERPROFILE%\usbstream-tools"
+set "SCRIPT_DIR=%~dp0"
 
 echo.
 echo  ==============================================
@@ -22,7 +29,7 @@ echo.
 :: Create tools directory
 if not exist "%TOOLS_DIR%" mkdir "%TOOLS_DIR%"
 
-:: Add tools dir and sub-paths to PATH for this session immediately
+:: Add tools dir and sub-paths to PATH for this session
 set "PATH=%PATH%;%TOOLS_DIR%"
 set "PATH=%PATH%;%TOOLS_DIR%\platform-tools"
 set "PATH=%PATH%;%TOOLS_DIR%\scrcpy"
@@ -63,8 +70,8 @@ if %errorlevel% neq 0 (
 
 :: ── 3. Python packages ───────────────────────────────────────────────────────
 call :SECTION "Python packages (websockets)"
-if exist "%~dp0requirements.txt" (
-    pip install -r "%~dp0requirements.txt" --quiet
+if exist "%SCRIPT_DIR%requirements.txt" (
+    pip install -r "%SCRIPT_DIR%requirements.txt" --quiet
     if !errorlevel! neq 0 (
         call :ERR "Failed to install Python packages"
     ) else (
@@ -81,9 +88,9 @@ adb version >nul 2>&1
 if %errorlevel% neq 0 (
     call :INSTALL_ADB
 ) else (
-    for /f "tokens=1,2,3 delims= " %%a in ('adb version 2^>^&1 ^| findstr /i "version"') do (
-        call :OK "ADB already installed - %%a %%b %%c"
-    )
+    adb version > "%TEMP%\adbver.txt" 2>&1
+    for /f "tokens=1,2,3 delims= " %%a in ('findstr /i "version" "%TEMP%\adbver.txt"') do call :OK "ADB already installed - %%a %%b %%c"
+    del "%TEMP%\adbver.txt" >nul 2>&1
 )
 
 :: ── 5. scrcpy ────────────────────────────────────────────────────────────────
@@ -92,9 +99,7 @@ scrcpy --version >nul 2>&1
 if %errorlevel% neq 0 (
     call :INSTALL_SCRCPY
 ) else (
-    for /f "tokens=1,2 delims= " %%a in ('scrcpy --version 2^>^&1 ^| findstr /i "scrcpy"') do (
-        call :OK "scrcpy already installed - %%a %%b"
-    )
+    call :OK "scrcpy already installed"
 )
 
 :: ── 6. FFmpeg ────────────────────────────────────────────────────────────────
@@ -103,9 +108,7 @@ ffmpeg -version >nul 2>&1
 if %errorlevel% neq 0 (
     call :INSTALL_FFMPEG
 ) else (
-    for /f "tokens=3 delims= " %%v in ('ffmpeg -version 2^>^&1 ^| findstr /i "ffmpeg version"') do (
-        call :OK "FFmpeg %%v already installed"
-    )
+    call :OK "FFmpeg already installed"
 )
 
 :: ── 7. cloudflared ───────────────────────────────────────────────────────────
@@ -114,9 +117,7 @@ cloudflared --version >nul 2>&1
 if %errorlevel% neq 0 (
     call :INSTALL_CLOUDFLARED
 ) else (
-    for /f "tokens=1,2,3 delims= " %%a in ('cloudflared --version 2^>^&1') do (
-        call :OK "cloudflared already installed - %%a %%b %%c"
-    )
+    call :OK "cloudflared already installed"
 )
 
 :: ── 8. ADB device check ──────────────────────────────────────────────────────
@@ -125,44 +126,46 @@ adb version >nul 2>&1
 if %errorlevel% neq 0 (
     call :WARN "ADB still not on PATH - open a new terminal after setup."
 ) else (
-    adb start-server >nul 2>&1
+    adb start-server > "%TEMP%\adb_start.txt" 2>&1
     call :OK "ADB server running"
     echo.
     echo  Connected devices:
     adb devices -l > "%TEMP%\adb_devices.txt" 2>&1
     type "%TEMP%\adb_devices.txt"
     del "%TEMP%\adb_devices.txt" >nul 2>&1
+    del "%TEMP%\adb_start.txt" >nul 2>&1
 )
 
 :: ── Summary ──────────────────────────────────────────────────────────────────
 echo.
 echo  ==============================================
 if %ERRORS%==0 (
-    echo   ALL DONE - No errors!
+    echo   ALL DONE - Setup complete with no errors!
     echo.
-    echo   NOTE: Open a NEW terminal window before running
-    echo         python server.py so the PATH changes take effect.
+    echo   Starting stream server and opening browser...
+    echo  ==============================================
     echo.
-    echo   To start streaming:
-    echo     1. Connect Android device via USB
-    echo     2. Enable USB Debugging on device
-    echo     3. Open a new terminal and run:
-    echo           python server.py
-    echo     4. The remote cloudflared link prints in the console.
-    echo     5. Share that URL to view from anywhere.
+
+    :: Launch server.py in a new visible window
+    start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && python server.py"
+
+    :: Wait a few seconds for the server to start then open the viewer
+    timeout /t 4 /nobreak >nul
+    start "" "http://localhost:8080"
+
+    echo   Server window opened. Browser launching at http://localhost:8080
+    echo   The cloudflared remote link will appear in the server window.
     echo.
-    echo   Local-only mode (no tunnel):
-    echo     python server.py --no-tunnel
+    echo   To stop: close the server window.
 ) else (
     echo   Setup finished with %ERRORS% error(s).
-    echo   Check messages above.
+    echo   Fix the errors above and re-run install.bat
+    echo  ==============================================
 )
-echo  ==============================================
 echo.
-pause
-exit /b 0
-
-
+echo  Press any key to close this setup window...
+pause >nul
+exit
 :: ════════════════════════════════════════════════════════════════
 ::  HELPERS
 :: ════════════════════════════════════════════════════════════════
@@ -188,12 +191,12 @@ exit /b 0
 
 :: ── Python (no admin - per-user silent install) ──────────────────────────────
 :INSTALL_PYTHON
-call :WARN "Python not found. Downloading Python 3.11 (curl - shows progress)..."
+call :WARN "Python not found. Downloading Python 3.11 (curl)..."
 set "PY_INSTALLER=%TEMP%\python_installer.exe"
 curl.exe -L --progress-bar -o "%PY_INSTALLER%" "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download Python. Get it from: https://python.org/downloads"
-    exit /b 1
+    exit /b 0
 )
 call :WARN "Running Python installer silently (per-user, no admin needed)..."
 "%PY_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
@@ -207,16 +210,15 @@ exit /b 0
 
 :: ── ADB (no admin - extract to TOOLS_DIR) ───────────────────────────────────
 :INSTALL_ADB
-call :WARN "ADB not found. Downloading platform-tools (curl - shows progress)..."
+call :WARN "ADB not found. Downloading platform-tools (curl)..."
 set "ADB_ZIP=%TEMP%\platform-tools.zip"
 set "ADB_DIR=%TOOLS_DIR%\platform-tools"
 curl.exe -L --progress-bar -o "%ADB_ZIP%" "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download ADB."
-    exit /b 1
+    exit /b 0
 )
 call :WARN "Extracting ADB..."
-if not exist "%ADB_DIR%" mkdir "%ADB_DIR%"
 tar.exe -xf "%ADB_ZIP%" -C "%TOOLS_DIR%"
 del "%ADB_ZIP%" >nul 2>&1
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%ADB_DIR%', 'User')"
@@ -234,11 +236,11 @@ for /f "usebackq delims=" %%T in (
     `powershell -Command "(Invoke-RestMethod 'https://api.github.com/repos/Genymobile/scrcpy/releases/latest').tag_name"`
 ) do set "SCRCPY_TAG=%%T"
 if not defined SCRCPY_TAG set "SCRCPY_TAG=v3.1"
-call :WARN "Downloading scrcpy %SCRCPY_TAG% (curl - shows progress)..."
+call :WARN "Downloading scrcpy %SCRCPY_TAG% (curl)..."
 curl.exe -L --progress-bar -o "%SCRCPY_ZIP%" "https://github.com/Genymobile/scrcpy/releases/download/%SCRCPY_TAG%/scrcpy-win64-%SCRCPY_TAG%.zip"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download scrcpy."
-    exit /b 1
+    exit /b 0
 )
 call :WARN "Extracting scrcpy..."
 if exist "%TOOLS_DIR%\scrcpy_tmp" rmdir /s /q "%TOOLS_DIR%\scrcpy_tmp"
@@ -248,7 +250,6 @@ del "%SCRCPY_ZIP%" >nul 2>&1
 if exist "%SCRCPY_DIR%" rmdir /s /q "%SCRCPY_DIR%"
 for /d %%d in ("%TOOLS_DIR%\scrcpy_tmp\*") do move "%%d" "%SCRCPY_DIR%" >nul 2>&1
 rmdir /s /q "%TOOLS_DIR%\scrcpy_tmp" >nul 2>&1
-if not exist "%SCRCPY_DIR%" set "SCRCPY_DIR=%TOOLS_DIR%\scrcpy_tmp"
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%SCRCPY_DIR%', 'User')"
 set "PATH=%PATH%;%SCRCPY_DIR%"
 call :OK "scrcpy installed to %SCRCPY_DIR%"
@@ -257,16 +258,16 @@ exit /b 0
 
 :: ── FFmpeg (no admin - extract to TOOLS_DIR) ────────────────────────────────
 :INSTALL_FFMPEG
-call :WARN "FFmpeg not found. Downloading essentials build (curl - shows progress)..."
+call :WARN "FFmpeg not found. Downloading essentials build (curl)..."
 set "FF_ZIP=%TEMP%\ffmpeg.zip"
 set "FF_DIR=%TOOLS_DIR%\ffmpeg"
 set "FF_TMP=%TOOLS_DIR%\ffmpeg_tmp"
 curl.exe -L --progress-bar -o "%FF_ZIP%" "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download FFmpeg."
-    exit /b 1
+    exit /b 0
 )
-call :WARN "Extracting FFmpeg (using tar - fast)..."
+call :WARN "Extracting FFmpeg (tar - fast)..."
 if exist "%FF_TMP%" rmdir /s /q "%FF_TMP%"
 mkdir "%FF_TMP%"
 tar.exe -xf "%FF_ZIP%" -C "%FF_TMP%"
@@ -283,12 +284,12 @@ exit /b 0
 
 :: ── cloudflared (no admin - single exe to TOOLS_DIR) ────────────────────────
 :INSTALL_CLOUDFLARED
-call :WARN "cloudflared not found. Downloading (curl - shows progress)..."
+call :WARN "cloudflared not found. Downloading (curl)..."
 set "CF_EXE=%TOOLS_DIR%\cloudflared.exe"
 curl.exe -L --progress-bar -o "%CF_EXE%" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download cloudflared."
-    exit /b 1
+    exit /b 0
 )
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%TOOLS_DIR%', 'User')"
 set "PATH=%PATH%;%TOOLS_DIR%"
