@@ -129,7 +129,9 @@ if %errorlevel% neq 0 (
     call :OK "ADB server running"
     echo.
     echo  Connected devices:
-    adb devices -l
+    adb devices -l > "%TEMP%\adb_devices.txt" 2>&1
+    type "%TEMP%\adb_devices.txt"
+    del "%TEMP%\adb_devices.txt" >nul 2>&1
 )
 
 :: ── Summary ──────────────────────────────────────────────────────────────────
