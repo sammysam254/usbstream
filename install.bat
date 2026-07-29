@@ -4,30 +4,31 @@ title USB Stream - Auto Installer
 
 :: ============================================================
 ::  USB Stream Auto Installer
-::  Checks and installs: Python, pip packages, ADB, scrcpy, FFmpeg
-::  Run as Administrator for best results
+::  NO admin rights required - installs to %USERPROFILE%\usbstream-tools
+::  Checks: Python, pip, websockets, ADB, scrcpy, FFmpeg, cloudflared
 :: ============================================================
 
 set "ERRORS=0"
-set "INSTALLED=0"
+set "TOOLS_DIR=%USERPROFILE%\usbstream-tools"
 
-:: Color codes via ANSI (requires Windows 10+)
 echo.
 echo  ==============================================
 echo   USB Stream - Auto Setup
+echo   Install dir: %TOOLS_DIR%
 echo  ==============================================
 echo.
 
-:: ── 1. Check for winget ──────────────────────────────────────────────────────
-call :CHECK_WINGET
-if "%WINGET_OK%"=="0" (
-    echo [WARN] winget not found. Some packages will need manual install.
-    echo        Get it from: https://aka.ms/getwinget
-    echo.
-)
+:: Create tools directory
+if not exist "%TOOLS_DIR%" mkdir "%TOOLS_DIR%"
 
-:: ── 2. Python ────────────────────────────────────────────────────────────────
-call :SECTION "Python 3.11+"
+:: Add tools dir to PATH for this session immediately
+set "PATH=%PATH%;%TOOLS_DIR%"
+set "PATH=%PATH%;%TOOLS_DIR%\platform-tools"
+set "PATH=%PATH%;%TOOLS_DIR%\scrcpy"
+set "PATH=%PATH%;%TOOLS_DIR%\ffmpeg\bin"
+
+:: ── 1. Python ────────────────────────────────────────────────────────────────
+call :SECTION "Python 3"
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
     call :INSTALL_PYTHON
@@ -36,19 +37,19 @@ if %errorlevel% neq 0 (
     call :OK "Python !PY_VER! already installed"
 )
 
-:: ── 3. pip ───────────────────────────────────────────────────────────────────
+:: ── 2. pip ───────────────────────────────────────────────────────────────────
 call :SECTION "pip"
 pip --version >nul 2>&1
 if %errorlevel% neq 0 (
     call :WARN "pip not found, bootstrapping..."
-    python -m ensurepip --upgrade
-    python -m pip install --upgrade pip >nul 2>&1
+    python -m ensurepip --upgrade >nul 2>&1
+    python -m pip install --upgrade pip --quiet
     call :OK "pip installed"
 ) else (
     call :OK "pip already available"
 )
 
-:: ── 4. Python packages (requirements.txt) ────────────────────────────────────
+:: ── 3. Python packages ───────────────────────────────────────────────────────
 call :SECTION "Python packages (websockets)"
 if exist "%~dp0requirements.txt" (
     pip install -r "%~dp0requirements.txt" --quiet
@@ -58,12 +59,11 @@ if exist "%~dp0requirements.txt" (
         call :OK "Python packages installed"
     )
 ) else (
-    call :WARN "requirements.txt not found, installing websockets manually"
     pip install websockets --quiet
     call :OK "websockets installed"
 )
 
-:: ── 5. ADB ───────────────────────────────────────────────────────────────────
+:: ── 4. ADB ───────────────────────────────────────────────────────────────────
 call :SECTION "ADB (Android Debug Bridge)"
 adb version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -74,18 +74,18 @@ if %errorlevel% neq 0 (
     )
 )
 
-:: ── 6. scrcpy ────────────────────────────────────────────────────────────────
+:: ── 5. scrcpy ────────────────────────────────────────────────────────────────
 call :SECTION "scrcpy"
 scrcpy --version >nul 2>&1
 if %errorlevel% neq 0 (
     call :INSTALL_SCRCPY
 ) else (
-    for /f "tokens=2 delims= " %%v in ('scrcpy --version 2^>^&1 ^| findstr /i "scrcpy"') do (
-        call :OK "scrcpy %%v already installed"
+    for /f "tokens=1,2 delims= " %%a in ('scrcpy --version 2^>^&1 ^| findstr /i "scrcpy"') do (
+        call :OK "scrcpy already installed - %%a %%b"
     )
 )
 
-:: ── 7. FFmpeg ────────────────────────────────────────────────────────────────
+:: ── 6. FFmpeg ────────────────────────────────────────────────────────────────
 call :SECTION "FFmpeg"
 ffmpeg -version >nul 2>&1
 if %errorlevel% neq 0 (
@@ -96,26 +96,25 @@ if %errorlevel% neq 0 (
     )
 )
 
-:: ── 8. cloudflared ───────────────────────────────────────────────────────────
+:: ── 7. cloudflared ───────────────────────────────────────────────────────────
 call :SECTION "cloudflared (remote access tunnels)"
 cloudflared --version >nul 2>&1
 if %errorlevel% neq 0 (
     call :INSTALL_CLOUDFLARED
 ) else (
-    for /f "tokens=3 delims= " %%v in ('cloudflared --version 2^>^&1') do (
-        call :OK "cloudflared %%v already installed"
+    for /f "tokens=1,2,3 delims= " %%a in ('cloudflared --version 2^>^&1') do (
+        call :OK "cloudflared already installed - %%a %%b %%c"
     )
 )
 
-:: ── 9. Verify ADB detects devices ───────────────────────────────────────────
+:: ── 8. ADB device check ──────────────────────────────────────────────────────
 call :SECTION "ADB device check"
-adb devices >nul 2>&1
+adb version >nul 2>&1
 if %errorlevel% neq 0 (
-    call :WARN "ADB not responding. Try reconnecting device."
+    call :WARN "ADB still not on PATH - open a new terminal after setup."
 ) else (
     adb start-server >nul 2>&1
     call :OK "ADB server running"
-
     echo.
     echo  Connected devices:
     adb devices -l
@@ -125,21 +124,24 @@ if %errorlevel% neq 0 (
 echo.
 echo  ==============================================
 if %ERRORS%==0 (
-    echo   ALL DONE - Setup complete!
+    echo   ALL DONE - No errors!
+    echo.
+    echo   NOTE: Open a NEW terminal window before running
+    echo         python server.py so the PATH changes take effect.
     echo.
     echo   To start streaming:
     echo     1. Connect Android device via USB
     echo     2. Enable USB Debugging on device
-    echo     3. Run:  python server.py
-    echo     4. The remote access link will be printed in the console.
-    echo     5. Share that URL to view the stream from anywhere.
+    echo     3. Open a new terminal and run:
+    echo           python server.py
+    echo     4. The remote cloudflared link prints in the console.
+    echo     5. Share that URL to view from anywhere.
     echo.
     echo   Local-only mode (no tunnel):
     echo     python server.py --no-tunnel
-    echo     Then open: http://localhost:8080
 ) else (
     echo   Setup finished with %ERRORS% error(s).
-    echo   Check the messages above and resolve manually.
+    echo   Check messages above.
 )
 echo  ==============================================
 echo.
@@ -148,12 +150,12 @@ exit /b 0
 
 
 :: ════════════════════════════════════════════════════════════════
-::  SUBROUTINES
+::  HELPERS
 :: ════════════════════════════════════════════════════════════════
 
 :SECTION
 echo.
-echo  ── %~1 ──
+echo  -- %~1 --
 exit /b 0
 
 :OK
@@ -169,188 +171,111 @@ echo   [FAIL] %~1
 set /a ERRORS+=1
 exit /b 0
 
-
-:: ── winget check ─────────────────────────────────────────────────────────────
-:CHECK_WINGET
-set "WINGET_OK=0"
-winget --version >nul 2>&1
-if %errorlevel%==0 set "WINGET_OK=1"
-exit /b 0
-
-
-:: ── Install Python via winget ─────────────────────────────────────────────────
+:: ── Python installer (no admin - per-user) ───────────────────────────────────
 :INSTALL_PYTHON
-if "%WINGET_OK%"=="1" (
-    call :WARN "Python not found. Installing via winget..."
-    winget install --id Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements
-    if !errorlevel! neq 0 (
-        call :ERR "Python install failed. Get it from https://python.org/downloads"
-    ) else (
-        :: Refresh PATH for this session
-        for /f "usebackq tokens=2*" %%A in (
-            `reg query "HKCU\Environment" /v PATH 2^>nul`
-        ) do set "PATH=%%B;!PATH!"
-        call :OK "Python installed"
-    )
-) else (
-    call :ERR "Python not found and winget unavailable."
-    echo         Download Python manually: https://python.org/downloads
-    echo         Make sure to tick 'Add Python to PATH' during install.
+call :WARN "Python not found. Downloading Python installer..."
+set "PY_INSTALLER=%TEMP%\python_installer.exe"
+powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%PY_INSTALLER%' -UseBasicParsing"
+if %errorlevel% neq 0 (
+    call :ERR "Failed to download Python."
+    echo        Get it from: https://python.org/downloads
+    echo        Tick 'Add Python to PATH' during install.
+    exit /b 1
 )
+:: /quiet InstallAllUsers=0 = per-user, no admin needed
+"%PY_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
+del "%PY_INSTALLER%" >nul 2>&1
+:: Refresh PATH from registry
+for /f "usebackq tokens=2*" %%A in (
+    `reg query "HKCU\Environment" /v PATH 2^>nul`
+) do set "PATH=%%B;!PATH!"
+call :OK "Python installed (per-user)"
 exit /b 0
 
-
-:: ── Install ADB ──────────────────────────────────────────────────────────────
+:: ── ADB installer (no admin - extract to TOOLS_DIR) ─────────────────────────
 :INSTALL_ADB
-if "%WINGET_OK%"=="1" (
-    call :WARN "ADB not found. Installing Android Platform Tools via winget..."
-    winget install --id Google.PlatformTools --silent --accept-package-agreements --accept-source-agreements
-    if !errorlevel! neq 0 (
-        call :INSTALL_ADB_MANUAL
-    ) else (
-        :: Refresh PATH
-        for /f "usebackq tokens=2*" %%A in (
-            `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul`
-        ) do set "PATH=%%B;!PATH!"
-        call :OK "ADB installed via winget"
-    )
-) else (
-    call :INSTALL_ADB_MANUAL
-)
-exit /b 0
-
-:INSTALL_ADB_MANUAL
-:: Fallback: download platform-tools zip directly
-call :WARN "Downloading ADB platform-tools manually..."
+call :WARN "ADB not found. Downloading platform-tools..."
 set "ADB_ZIP=%TEMP%\platform-tools.zip"
-set "ADB_DIR=%ProgramFiles%\platform-tools"
+set "ADB_DIR=%TOOLS_DIR%\platform-tools"
 powershell -Command "Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile '%ADB_ZIP%' -UseBasicParsing"
 if %errorlevel% neq 0 (
-    call :ERR "Failed to download ADB. Get it from: https://developer.android.com/tools/releases/platform-tools"
+    call :ERR "Failed to download ADB."
     exit /b 1
 )
-powershell -Command "Expand-Archive -Path '%ADB_ZIP%' -DestinationPath '%ProgramFiles%' -Force"
+powershell -Command "Expand-Archive -Path '%ADB_ZIP%' -DestinationPath '%TOOLS_DIR%' -Force"
 del "%ADB_ZIP%" >nul 2>&1
-:: Add to user PATH
+:: platform-tools.zip extracts to a folder called platform-tools inside TOOLS_DIR
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%ADB_DIR%', 'User')"
 set "PATH=%PATH%;%ADB_DIR%"
-call :OK "ADB installed to %ADB_DIR% — PATH updated"
+call :OK "ADB installed to %ADB_DIR%"
 exit /b 0
 
-
-:: ── Install scrcpy ───────────────────────────────────────────────────────────
+:: ── scrcpy installer (no admin - extract to TOOLS_DIR) ──────────────────────
 :INSTALL_SCRCPY
-if "%WINGET_OK%"=="1" (
-    call :WARN "scrcpy not found. Installing via winget..."
-    winget install --id Genymobile.scrcpy --silent --accept-package-agreements --accept-source-agreements
-    if !errorlevel! neq 0 (
-        call :INSTALL_SCRCPY_MANUAL
-    ) else (
-        call :OK "scrcpy installed via winget"
-    )
-) else (
-    call :INSTALL_SCRCPY_MANUAL
-)
-exit /b 0
-
-:INSTALL_SCRCPY_MANUAL
-call :WARN "Downloading scrcpy manually..."
+call :WARN "scrcpy not found. Downloading..."
 set "SCRCPY_ZIP=%TEMP%\scrcpy.zip"
-set "SCRCPY_DIR=%ProgramFiles%\scrcpy"
-:: Get latest release zip (v3.1 as of build date — update version as needed)
-powershell -Command "Invoke-WebRequest -Uri 'https://github.com/Genymobile/scrcpy/releases/download/v3.1/scrcpy-win64-v3.1.zip' -OutFile '%SCRCPY_ZIP%' -UseBasicParsing"
+set "SCRCPY_DIR=%TOOLS_DIR%\scrcpy"
+
+:: Fetch the latest release tag from GitHub
+for /f "usebackq delims=" %%T in (
+    `powershell -Command "(Invoke-RestMethod 'https://api.github.com/repos/Genymobile/scrcpy/releases/latest').tag_name"`
+) do set "SCRCPY_TAG=%%T"
+
+if not defined SCRCPY_TAG set "SCRCPY_TAG=v3.1"
+call :OK "Latest scrcpy tag: %SCRCPY_TAG%"
+
+powershell -Command "Invoke-WebRequest -Uri 'https://github.com/Genymobile/scrcpy/releases/download/%SCRCPY_TAG%/scrcpy-win64-%SCRCPY_TAG%.zip' -OutFile '%SCRCPY_ZIP%' -UseBasicParsing"
 if %errorlevel% neq 0 (
-    call :ERR "Failed to download scrcpy. Get it from: https://github.com/Genymobile/scrcpy/releases"
+    call :ERR "Failed to download scrcpy."
     exit /b 1
 )
-powershell -Command "Expand-Archive -Path '%SCRCPY_ZIP%' -DestinationPath '%ProgramFiles%\scrcpy' -Force"
+powershell -Command "Expand-Archive -Path '%SCRCPY_ZIP%' -DestinationPath '%TOOLS_DIR%\scrcpy_tmp' -Force"
 del "%SCRCPY_ZIP%" >nul 2>&1
-:: scrcpy extracts into a subfolder — find it
-for /d %%d in ("%ProgramFiles%\scrcpy\*") do set "SCRCPY_BIN=%%d"
-if not defined SCRCPY_BIN set "SCRCPY_BIN=%ProgramFiles%\scrcpy"
-powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%SCRCPY_BIN%', 'User')"
-set "PATH=%PATH%;%SCRCPY_BIN%"
-call :OK "scrcpy installed — PATH updated"
-exit /b 0
-
-
-:: ── Install FFmpeg ───────────────────────────────────────────────────────────
-:INSTALL_FFMPEG
-if "%WINGET_OK%"=="1" (
-    call :WARN "FFmpeg not found. Installing via winget..."
-    winget install --id Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
-    if !errorlevel! neq 0 (
-        call :INSTALL_FFMPEG_MANUAL
-    ) else (
-        call :OK "FFmpeg installed via winget"
-    )
-) else (
-    call :INSTALL_FFMPEG_MANUAL
+:: Move the inner folder to a clean path
+if exist "%SCRCPY_DIR%" rmdir /s /q "%SCRCPY_DIR%"
+for /d %%d in ("%TOOLS_DIR%\scrcpy_tmp\*") do (
+    move "%%d" "%SCRCPY_DIR%" >nul 2>&1
 )
+rmdir /s /q "%TOOLS_DIR%\scrcpy_tmp" >nul 2>&1
+if not exist "%SCRCPY_DIR%" set "SCRCPY_DIR=%TOOLS_DIR%\scrcpy_tmp"
+powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%SCRCPY_DIR%', 'User')"
+set "PATH=%PATH%;%SCRCPY_DIR%"
+call :OK "scrcpy installed to %SCRCPY_DIR%"
 exit /b 0
 
-:INSTALL_FFMPEG_MANUAL
-call :WARN "Downloading FFmpeg manually (essentials build)..."
+:: ── FFmpeg installer (no admin - extract to TOOLS_DIR) ──────────────────────
+:INSTALL_FFMPEG
+call :WARN "FFmpeg not found. Downloading essentials build..."
 set "FF_ZIP=%TEMP%\ffmpeg.zip"
-set "FF_DIR=%ProgramFiles%\ffmpeg"
+set "FF_DIR=%TOOLS_DIR%\ffmpeg"
 powershell -Command "Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile '%FF_ZIP%' -UseBasicParsing"
 if %errorlevel% neq 0 (
-    call :ERR "Failed to download FFmpeg. Get it from: https://ffmpeg.org/download.html"
+    call :ERR "Failed to download FFmpeg."
     exit /b 1
 )
-powershell -Command "Expand-Archive -Path '%FF_ZIP%' -DestinationPath '%ProgramFiles%\ffmpeg' -Force"
+powershell -Command "Expand-Archive -Path '%FF_ZIP%' -DestinationPath '%TOOLS_DIR%\ffmpeg_tmp' -Force"
 del "%FF_ZIP%" >nul 2>&1
-:: FFmpeg extracts into a versioned subfolder — grab the bin path
-for /d %%d in ("%ProgramFiles%\ffmpeg\*") do set "FF_BIN=%%d\bin"
-if not defined FF_BIN set "FF_BIN=%ProgramFiles%\ffmpeg\bin"
+if exist "%FF_DIR%" rmdir /s /q "%FF_DIR%"
+for /d %%d in ("%TOOLS_DIR%\ffmpeg_tmp\*") do (
+    move "%%d" "%FF_DIR%" >nul 2>&1
+)
+rmdir /s /q "%TOOLS_DIR%\ffmpeg_tmp" >nul 2>&1
+set "FF_BIN=%FF_DIR%\bin"
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%FF_BIN%', 'User')"
 set "PATH=%PATH%;%FF_BIN%"
-call :OK "FFmpeg installed — PATH updated"
+call :OK "FFmpeg installed to %FF_DIR%"
 exit /b 0
 
-
-:: ── Install cloudflared ──────────────────────────────────────────────────────
+:: ── cloudflared installer (no admin - single exe to TOOLS_DIR) ───────────────
 :INSTALL_CLOUDFLARED
-if "%WINGET_OK%"=="1" (
-    call :WARN "cloudflared not found. Installing via winget..."
-    winget install --id Cloudflare.cloudflared --silent --accept-package-agreements --accept-source-agreements
-    if !errorlevel! neq 0 (
-        call :INSTALL_CLOUDFLARED_MANUAL
-    ) else (
-        :: Refresh system PATH so cloudflared is immediately usable
-        for /f "usebackq tokens=2*" %%A in (
-            `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul`
-        ) do set "PATH=%%B;!PATH!"
-        call :OK "cloudflared installed via winget"
-    )
-) else (
-    call :INSTALL_CLOUDFLARED_MANUAL
-)
-exit /b 0
-
-:INSTALL_CLOUDFLARED_MANUAL
-:: Download the official Windows AMD64 binary directly from Cloudflare
-call :WARN "Downloading cloudflared binary manually..."
-set "CF_DIR=%ProgramFiles%\cloudflared"
-set "CF_EXE=%CF_DIR%\cloudflared.exe"
-
-if not exist "%CF_DIR%" (
-    powershell -Command "New-Item -ItemType Directory -Path '%CF_DIR%' -Force" >nul
-)
-
-powershell -Command ^
-    "Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile '%CF_EXE%' -UseBasicParsing"
-
+call :WARN "cloudflared not found. Downloading..."
+set "CF_EXE=%TOOLS_DIR%\cloudflared.exe"
+powershell -Command "Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile '%CF_EXE%' -UseBasicParsing"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download cloudflared."
-    echo         Get it manually from: https://github.com/cloudflare/cloudflared/releases
     exit /b 1
 )
-
-:: Add to user PATH permanently
-powershell -Command ^
-    "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%CF_DIR%', 'User')"
-set "PATH=%PATH%;%CF_DIR%"
-
-call :OK "cloudflared installed to %CF_DIR% — PATH updated"
+powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%TOOLS_DIR%', 'User')"
+set "PATH=%PATH%;%TOOLS_DIR%"
+call :OK "cloudflared installed to %TOOLS_DIR%"
 exit /b 0
