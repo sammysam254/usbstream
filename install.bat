@@ -214,7 +214,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 call :WARN "Extracting ADB..."
-powershell -Command "Expand-Archive -Path '%ADB_ZIP%' -DestinationPath '%TOOLS_DIR%' -Force"
+if not exist "%ADB_DIR%" mkdir "%ADB_DIR%"
+tar.exe -xf "%ADB_ZIP%" -C "%TOOLS_DIR%"
 del "%ADB_ZIP%" >nul 2>&1
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%ADB_DIR%', 'User')"
 set "PATH=%PATH%;%ADB_DIR%"
@@ -238,7 +239,9 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 call :WARN "Extracting scrcpy..."
-powershell -Command "Expand-Archive -Path '%SCRCPY_ZIP%' -DestinationPath '%TOOLS_DIR%\scrcpy_tmp' -Force"
+if exist "%TOOLS_DIR%\scrcpy_tmp" rmdir /s /q "%TOOLS_DIR%\scrcpy_tmp"
+mkdir "%TOOLS_DIR%\scrcpy_tmp"
+tar.exe -xf "%SCRCPY_ZIP%" -C "%TOOLS_DIR%\scrcpy_tmp"
 del "%SCRCPY_ZIP%" >nul 2>&1
 if exist "%SCRCPY_DIR%" rmdir /s /q "%SCRCPY_DIR%"
 for /d %%d in ("%TOOLS_DIR%\scrcpy_tmp\*") do move "%%d" "%SCRCPY_DIR%" >nul 2>&1
@@ -255,17 +258,20 @@ exit /b 0
 call :WARN "FFmpeg not found. Downloading essentials build (curl - shows progress)..."
 set "FF_ZIP=%TEMP%\ffmpeg.zip"
 set "FF_DIR=%TOOLS_DIR%\ffmpeg"
+set "FF_TMP=%TOOLS_DIR%\ffmpeg_tmp"
 curl.exe -L --progress-bar -o "%FF_ZIP%" "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download FFmpeg."
     exit /b 1
 )
-call :WARN "Extracting FFmpeg..."
-powershell -Command "Expand-Archive -Path '%FF_ZIP%' -DestinationPath '%TOOLS_DIR%\ffmpeg_tmp' -Force"
+call :WARN "Extracting FFmpeg (using tar - fast)..."
+if exist "%FF_TMP%" rmdir /s /q "%FF_TMP%"
+mkdir "%FF_TMP%"
+tar.exe -xf "%FF_ZIP%" -C "%FF_TMP%"
 del "%FF_ZIP%" >nul 2>&1
 if exist "%FF_DIR%" rmdir /s /q "%FF_DIR%"
-for /d %%d in ("%TOOLS_DIR%\ffmpeg_tmp\*") do move "%%d" "%FF_DIR%" >nul 2>&1
-rmdir /s /q "%TOOLS_DIR%\ffmpeg_tmp" >nul 2>&1
+for /d %%d in ("%FF_TMP%\*") do move "%%d" "%FF_DIR%" >nul 2>&1
+rmdir /s /q "%FF_TMP%" >nul 2>&1
 set "FF_BIN=%FF_DIR%\bin"
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%FF_BIN%', 'User')"
 set "PATH=%PATH%;%FF_BIN%"
