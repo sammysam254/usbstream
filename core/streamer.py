@@ -1,6 +1,6 @@
 """
-Screen streamer — captures frames via scrcpy's raw video output piped over
-ADB, encodes each frame as a JPEG, strips EXIF, then broadcasts over
+Screen streamer — captures frames via scrcpy's matroska video output piped over
+ADB, encodes each frame as a JPEG via FFmpeg, strips EXIF, then broadcasts over
 WebSocket.
 
 The WebSocket endpoint is served on the SAME port as the HTTP UI server
@@ -12,6 +12,7 @@ import asyncio
 import subprocess
 import logging
 import os
+import threading
 from typing import Optional, Set
 
 from aiohttp import web
@@ -20,8 +21,6 @@ import aiohttp
 from .privacy import strip_exif_from_frame
 
 logger = logging.getLogger("streamer")
-
-MAX_FRAME_SIZE = 8 * 1024 * 1024   # 8 MB safety cap per frame
 
 
 class ScreenStreamer:
@@ -41,7 +40,8 @@ class ScreenStreamer:
         self.bit_rate = bit_rate
         self.fps      = fps
 
-        self._proc: Optional[subprocess.Popen] = None
+        self._scrcpy_proc: Optional[subprocess.Popen] = None
+        self._ffmpeg_proc: Optional[subprocess.Popen] = None
         self._clients: Set[web.WebSocketResponse] = set()
         self._running  = False
         self._last_frame: Optional[bytes] = None
@@ -49,57 +49,76 @@ class ScreenStreamer:
         # Path to the UI static files
         self._ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
 
+    # ── Log stderr helper ─────────────────────────────────────────────────────
+
+    def _log_stderr(self, proc: subprocess.Popen, name: str):
+        """Continuously read and log stderr from sub-processes."""
+        def drain():
+            if not proc.stderr:
+                return
+            for line in iter(proc.stderr.readline, b""):
+                text = line.decode(errors="replace").strip()
+                if text:
+                    logger.debug("[%s] %s", name, text)
+        t = threading.Thread(target=drain, daemon=True)
+        t.start()
+
     # ── scrcpy process ────────────────────────────────────────────────────────
 
     def _start_scrcpy(self) -> subprocess.Popen:
         """
-        Launch scrcpy in raw-stream mode.  The H.264 stream is piped to stdout.
-        --no-display      : don't open scrcpy's own window
-        --raw-stream      : write raw H.264 NAL units to stdout
-        --no-audio        : audio not needed for screen mirror
-        --lock-video-orientation 0 : keep portrait
+        Launch scrcpy outputting to stdout (-r -) in matroska format.
+        -N / --no-playback : don't open scrcpy's local window
+        -r -              : output recorded stream to stdout
+        --record-format=mkv: matroska container
+        --no-audio        : audio not needed
         """
+        max_dim = self.max_size.split('x')[0] if 'x' in self.max_size else self.max_size
         cmd = [
             "scrcpy",
             "-s", self.serial,
-            "--no-display",
-            "--raw-stream",
+            "-N",
+            "-r", "-",
+            "--record-format=mkv",
             "--no-audio",
             "--video-codec=h264",
-            f"--max-size={self.max_size.split('x')[0]}",
+            f"--max-size={max_dim}",
             f"--video-bit-rate={self.bit_rate}",
             f"--max-fps={self.fps}",
-            "--lock-video-orientation=0",
         ]
         logger.info("Launching scrcpy: %s", " ".join(cmd))
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,  # capture errors for debugging
+            stderr=subprocess.PIPE,
         )
+        self._log_stderr(proc, "scrcpy")
+        return proc
 
-    # ── FFmpeg transcoder (H.264 → MJPEG) ────────────────────────────────────
+    # ── FFmpeg transcoder (Matroska → MJPEG) ──────────────────────────────────
 
     def _start_ffmpeg(self, scrcpy_stdout) -> subprocess.Popen:
         """
-        Pipe scrcpy's raw H.264 stream through ffmpeg to produce individual
-        JPEG frames on stdout (MJPEG mux gives us length-prefixed frames).
+        Pipe scrcpy's matroska stream through ffmpeg to produce individual
+        JPEG frames on stdout (MJPEG mux gives length-prefixed frames).
         """
         cmd = [
             "ffmpeg",
-            "-loglevel", "quiet",
-            "-f", "h264",
+            "-loglevel", "error",
+            "-f", "matroska",
             "-i", "pipe:0",
             "-f", "mjpeg",
             "-q:v", "3",       # JPEG quality (2=best, 31=worst)
             "pipe:1",
         ]
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdin=scrcpy_stdout,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
+        self._log_stderr(proc, "ffmpeg")
+        return proc
 
     # ── MJPEG frame reader ────────────────────────────────────────────────────
 
@@ -218,9 +237,7 @@ class ScreenStreamer:
             self.ws_host, self.ws_port,
         )
 
-        # Store runner so stop() can clean up
         self._runner = runner
-
         await self._frame_producer()
 
     def stop(self):
