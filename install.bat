@@ -150,8 +150,8 @@ set "URL_FILE=%TEMP%\usbstream_url.txt"
 if exist "%URL_FILE%" del "%URL_FILE%" >nul 2>&1
 if exist "%SERVER_LOG%" del "%SERVER_LOG%" >nul 2>&1
 
-:: Launch server in a new visible window, tee output to log file
-start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && python server.py 2>&1 | tee "%SERVER_LOG%""
+:: Launch server in a new visible window, redirect output to log file
+start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && python server.py > "%SERVER_LOG%" 2>&1"
 
 echo   Server window opened. Waiting for cloudflared tunnel URL...
 echo   (this takes ~10 seconds)
