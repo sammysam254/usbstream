@@ -5,6 +5,7 @@ title USB Stream - Auto Installer
 :: ============================================================
 ::  USB Stream Auto Installer
 ::  NO admin rights required - installs to %USERPROFILE%\usbstream-tools
+::  Uses curl.exe (built-in Win10+) for fast downloads with progress bar
 ::  Checks: Python, pip, websockets, ADB, scrcpy, FFmpeg, cloudflared
 :: ============================================================
 
@@ -21,7 +22,7 @@ echo.
 :: Create tools directory
 if not exist "%TOOLS_DIR%" mkdir "%TOOLS_DIR%"
 
-:: Add tools dir to PATH for this session immediately
+:: Add tools dir and sub-paths to PATH for this session immediately
 set "PATH=%PATH%;%TOOLS_DIR%"
 set "PATH=%PATH%;%TOOLS_DIR%\platform-tools"
 set "PATH=%PATH%;%TOOLS_DIR%\scrcpy"
@@ -30,12 +31,23 @@ set "PATH=%PATH%;%TOOLS_DIR%\ffmpeg\bin"
 :: ── 1. Python ────────────────────────────────────────────────────────────────
 call :SECTION "Python 3"
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    call :INSTALL_PYTHON
-) else (
+if %errorlevel%==0 (
     for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PY_VER=%%v
     call :OK "Python !PY_VER! already installed"
+    goto :PY_DONE
 )
+py --version >nul 2>&1
+if %errorlevel%==0 (
+    call :OK "Python found via 'py' launcher"
+    goto :PY_DONE
+)
+python3 --version >nul 2>&1
+if %errorlevel%==0 (
+    call :OK "Python found as 'python3'"
+    goto :PY_DONE
+)
+call :INSTALL_PYTHON
+:PY_DONE
 
 :: ── 2. pip ───────────────────────────────────────────────────────────────────
 call :SECTION "pip"
@@ -171,71 +183,65 @@ echo   [FAIL] %~1
 set /a ERRORS+=1
 exit /b 0
 
-:: ── Python installer (no admin - per-user) ───────────────────────────────────
+
+:: ── Python (no admin - per-user silent install) ──────────────────────────────
 :INSTALL_PYTHON
-call :WARN "Python not found. Downloading Python installer..."
+call :WARN "Python not found. Downloading Python 3.11 (curl - shows progress)..."
 set "PY_INSTALLER=%TEMP%\python_installer.exe"
-powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe' -OutFile '%PY_INSTALLER%' -UseBasicParsing"
+curl.exe -L --progress-bar -o "%PY_INSTALLER%" "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
 if %errorlevel% neq 0 (
-    call :ERR "Failed to download Python."
-    echo        Get it from: https://python.org/downloads
-    echo        Tick 'Add Python to PATH' during install.
+    call :ERR "Failed to download Python. Get it from: https://python.org/downloads"
     exit /b 1
 )
-:: /quiet InstallAllUsers=0 = per-user, no admin needed
+call :WARN "Running Python installer silently (per-user, no admin needed)..."
 "%PY_INSTALLER%" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
 del "%PY_INSTALLER%" >nul 2>&1
-:: Refresh PATH from registry
 for /f "usebackq tokens=2*" %%A in (
     `reg query "HKCU\Environment" /v PATH 2^>nul`
 ) do set "PATH=%%B;!PATH!"
 call :OK "Python installed (per-user)"
 exit /b 0
 
-:: ── ADB installer (no admin - extract to TOOLS_DIR) ─────────────────────────
+
+:: ── ADB (no admin - extract to TOOLS_DIR) ───────────────────────────────────
 :INSTALL_ADB
-call :WARN "ADB not found. Downloading platform-tools..."
+call :WARN "ADB not found. Downloading platform-tools (curl - shows progress)..."
 set "ADB_ZIP=%TEMP%\platform-tools.zip"
 set "ADB_DIR=%TOOLS_DIR%\platform-tools"
-powershell -Command "Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile '%ADB_ZIP%' -UseBasicParsing"
+curl.exe -L --progress-bar -o "%ADB_ZIP%" "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download ADB."
     exit /b 1
 )
+call :WARN "Extracting ADB..."
 powershell -Command "Expand-Archive -Path '%ADB_ZIP%' -DestinationPath '%TOOLS_DIR%' -Force"
 del "%ADB_ZIP%" >nul 2>&1
-:: platform-tools.zip extracts to a folder called platform-tools inside TOOLS_DIR
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%ADB_DIR%', 'User')"
 set "PATH=%PATH%;%ADB_DIR%"
 call :OK "ADB installed to %ADB_DIR%"
 exit /b 0
 
-:: ── scrcpy installer (no admin - extract to TOOLS_DIR) ──────────────────────
+
+:: ── scrcpy (no admin - extract to TOOLS_DIR) ────────────────────────────────
 :INSTALL_SCRCPY
-call :WARN "scrcpy not found. Downloading..."
+call :WARN "scrcpy not found. Fetching latest release tag..."
 set "SCRCPY_ZIP=%TEMP%\scrcpy.zip"
 set "SCRCPY_DIR=%TOOLS_DIR%\scrcpy"
-
-:: Fetch the latest release tag from GitHub
 for /f "usebackq delims=" %%T in (
     `powershell -Command "(Invoke-RestMethod 'https://api.github.com/repos/Genymobile/scrcpy/releases/latest').tag_name"`
 ) do set "SCRCPY_TAG=%%T"
-
 if not defined SCRCPY_TAG set "SCRCPY_TAG=v3.1"
-call :OK "Latest scrcpy tag: %SCRCPY_TAG%"
-
-powershell -Command "Invoke-WebRequest -Uri 'https://github.com/Genymobile/scrcpy/releases/download/%SCRCPY_TAG%/scrcpy-win64-%SCRCPY_TAG%.zip' -OutFile '%SCRCPY_ZIP%' -UseBasicParsing"
+call :WARN "Downloading scrcpy %SCRCPY_TAG% (curl - shows progress)..."
+curl.exe -L --progress-bar -o "%SCRCPY_ZIP%" "https://github.com/Genymobile/scrcpy/releases/download/%SCRCPY_TAG%/scrcpy-win64-%SCRCPY_TAG%.zip"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download scrcpy."
     exit /b 1
 )
+call :WARN "Extracting scrcpy..."
 powershell -Command "Expand-Archive -Path '%SCRCPY_ZIP%' -DestinationPath '%TOOLS_DIR%\scrcpy_tmp' -Force"
 del "%SCRCPY_ZIP%" >nul 2>&1
-:: Move the inner folder to a clean path
 if exist "%SCRCPY_DIR%" rmdir /s /q "%SCRCPY_DIR%"
-for /d %%d in ("%TOOLS_DIR%\scrcpy_tmp\*") do (
-    move "%%d" "%SCRCPY_DIR%" >nul 2>&1
-)
+for /d %%d in ("%TOOLS_DIR%\scrcpy_tmp\*") do move "%%d" "%SCRCPY_DIR%" >nul 2>&1
 rmdir /s /q "%TOOLS_DIR%\scrcpy_tmp" >nul 2>&1
 if not exist "%SCRCPY_DIR%" set "SCRCPY_DIR=%TOOLS_DIR%\scrcpy_tmp"
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%SCRCPY_DIR%', 'User')"
@@ -243,22 +249,22 @@ set "PATH=%PATH%;%SCRCPY_DIR%"
 call :OK "scrcpy installed to %SCRCPY_DIR%"
 exit /b 0
 
-:: ── FFmpeg installer (no admin - extract to TOOLS_DIR) ──────────────────────
+
+:: ── FFmpeg (no admin - extract to TOOLS_DIR) ────────────────────────────────
 :INSTALL_FFMPEG
-call :WARN "FFmpeg not found. Downloading essentials build..."
+call :WARN "FFmpeg not found. Downloading essentials build (curl - shows progress)..."
 set "FF_ZIP=%TEMP%\ffmpeg.zip"
 set "FF_DIR=%TOOLS_DIR%\ffmpeg"
-powershell -Command "Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile '%FF_ZIP%' -UseBasicParsing"
+curl.exe -L --progress-bar -o "%FF_ZIP%" "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download FFmpeg."
     exit /b 1
 )
+call :WARN "Extracting FFmpeg..."
 powershell -Command "Expand-Archive -Path '%FF_ZIP%' -DestinationPath '%TOOLS_DIR%\ffmpeg_tmp' -Force"
 del "%FF_ZIP%" >nul 2>&1
 if exist "%FF_DIR%" rmdir /s /q "%FF_DIR%"
-for /d %%d in ("%TOOLS_DIR%\ffmpeg_tmp\*") do (
-    move "%%d" "%FF_DIR%" >nul 2>&1
-)
+for /d %%d in ("%TOOLS_DIR%\ffmpeg_tmp\*") do move "%%d" "%FF_DIR%" >nul 2>&1
 rmdir /s /q "%TOOLS_DIR%\ffmpeg_tmp" >nul 2>&1
 set "FF_BIN=%FF_DIR%\bin"
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%FF_BIN%', 'User')"
@@ -266,11 +272,12 @@ set "PATH=%PATH%;%FF_BIN%"
 call :OK "FFmpeg installed to %FF_DIR%"
 exit /b 0
 
-:: ── cloudflared installer (no admin - single exe to TOOLS_DIR) ───────────────
+
+:: ── cloudflared (no admin - single exe to TOOLS_DIR) ────────────────────────
 :INSTALL_CLOUDFLARED
-call :WARN "cloudflared not found. Downloading..."
+call :WARN "cloudflared not found. Downloading (curl - shows progress)..."
 set "CF_EXE=%TOOLS_DIR%\cloudflared.exe"
-powershell -Command "Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile '%CF_EXE%' -UseBasicParsing"
+curl.exe -L --progress-bar -o "%CF_EXE%" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 if %errorlevel% neq 0 (
     call :ERR "Failed to download cloudflared."
     exit /b 1
