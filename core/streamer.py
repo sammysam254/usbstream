@@ -1,49 +1,53 @@
 """
 Screen streamer — captures frames via scrcpy's raw video output piped over
-ADB, encodes each frame as a JPEG, strips EXIF, then sends over WebSocket.
+ADB, encodes each frame as a JPEG, strips EXIF, then broadcasts over
+WebSocket.
+
+The WebSocket endpoint is served on the SAME port as the HTTP UI server
+(via aiohttp) so a single cloudflared tunnel exposes both the viewer page
+and the live stream.  Clients connect to  wss://<tunnel-host>/ws  and the
+browser auto-detects the correct URL from window.location.
 """
 import asyncio
 import subprocess
-import struct
 import logging
-import time
-from typing import Optional
+import os
+from typing import Optional, Set
 
-import websockets
-from websockets.server import WebSocketServerProtocol
+from aiohttp import web
+import aiohttp
 
 from .privacy import strip_exif_from_frame
 
 logger = logging.getLogger("streamer")
 
-# ── scrcpy frame protocol constants ──────────────────────────────────────────
-# scrcpy --no-display --raw-stream outputs: [PTS 8 bytes][size 4 bytes][data]
-# We read that binary stream directly.
-SCRCPY_HEADER_SIZE = 12   # 8 bytes PTS + 4 bytes payload size
-MAX_FRAME_SIZE     = 8 * 1024 * 1024  # 8 MB safety cap per frame
+MAX_FRAME_SIZE = 8 * 1024 * 1024   # 8 MB safety cap per frame
 
 
 class ScreenStreamer:
     def __init__(
         self,
         serial: str,
-        ws_host: str = "127.0.0.1",
-        ws_port: int = 8765,
+        ws_host: str = "0.0.0.0",
+        ws_port: int = 8080,          # unified port (HTTP + WS)
         max_size: str = "1280x720",
         bit_rate: str = "4M",
         fps: int = 30,
     ):
-        self.serial    = serial
-        self.ws_host   = ws_host
-        self.ws_port   = ws_port
-        self.max_size  = max_size
-        self.bit_rate  = bit_rate
-        self.fps       = fps
+        self.serial   = serial
+        self.ws_host  = ws_host
+        self.ws_port  = ws_port
+        self.max_size = max_size
+        self.bit_rate = bit_rate
+        self.fps      = fps
 
         self._proc: Optional[subprocess.Popen] = None
-        self._clients: set[WebSocketServerProtocol] = set()
+        self._clients: Set[web.WebSocketResponse] = set()
         self._running  = False
         self._last_frame: Optional[bytes] = None
+
+        # Path to the UI static files
+        self._ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
 
     # ── scrcpy process ────────────────────────────────────────────────────────
 
@@ -148,32 +152,48 @@ class ScreenStreamer:
                     dead = set()
                     for ws in list(self._clients):
                         try:
-                            await ws.send(clean_frame)
+                            await ws.send_bytes(clean_frame)
                         except Exception:
                             dead.add(ws)
                     self._clients -= dead
 
-    # ── WebSocket server ──────────────────────────────────────────────────────
+    # ── aiohttp WebSocket handler ─────────────────────────────────────────────
 
-    async def _ws_handler(self, ws: WebSocketServerProtocol):
-        """Handle a new WebSocket client connection."""
+    async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
+        """Handle a new WebSocket client connection at /ws."""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+
         self._clients.add(ws)
-        logger.info("Client connected: %s", ws.remote_address)
+        logger.info("WS client connected: %s", request.remote)
+
         try:
             # Send the latest cached frame immediately so the client
             # doesn't stare at a blank screen on connect.
             if self._last_frame:
-                await ws.send(self._last_frame)
-            # Keep the connection alive; frames are pushed by _frame_producer
-            await ws.wait_closed()
+                await ws.send_bytes(self._last_frame)
+
+            # Keep connection alive; frames arrive via _frame_producer
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.warning("WS error: %s", ws.exception())
+                    break
         finally:
             self._clients.discard(ws)
-            logger.info("Client disconnected: %s", ws.remote_address)
+            logger.info("WS client disconnected: %s", request.remote)
+
+        return ws
+
+    # ── aiohttp static file handler ───────────────────────────────────────────
+
+    async def _index_handler(self, request: web.Request) -> web.FileResponse:
+        """Serve the UI index.html."""
+        return web.FileResponse(os.path.join(self._ui_dir, "index.html"))
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def start(self):
-        """Start scrcpy, ffmpeg, WebSocket server, and frame producer."""
+        """Start scrcpy, ffmpeg, and a combined HTTP+WebSocket aiohttp server."""
         self._running = True
 
         self._scrcpy_proc = self._start_scrcpy()
@@ -182,17 +202,26 @@ class ScreenStreamer:
 
         self._ffmpeg_proc = self._start_ffmpeg(self._scrcpy_proc.stdout)
 
-        ws_server = await websockets.serve(
-            self._ws_handler,
-            self.ws_host,
-            self.ws_port,
-        )
+        # Build aiohttp app — serves UI on / and WebSocket on /ws
+        app = web.Application()
+        app.router.add_get("/ws", self._ws_handler)
+        app.router.add_get("/", self._index_handler)
+        app.router.add_static("/", self._ui_dir, show_index=False)
+
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        site = web.TCPSite(runner, self.ws_host, self.ws_port)
+        await site.start()
+
         logger.info(
-            "WebSocket server listening on ws://%s:%d", self.ws_host, self.ws_port
+            "Combined HTTP+WebSocket server on http://%s:%d  (WS at /ws)",
+            self.ws_host, self.ws_port,
         )
 
+        # Store runner so stop() can clean up
+        self._runner = runner
+
         await self._frame_producer()
-        ws_server.close()
 
     def stop(self):
         """Terminate streaming processes."""

@@ -3,11 +3,15 @@ Entry-point for the USB Stream server.
 
 Usage:
     python server.py [--serial SERIAL] [--port PORT] [--size WxH] [--fps FPS]
-                     [--no-tunnel] [--ui-port PORT]
+                     [--no-tunnel]
 
 If --serial is omitted the first detected USB device is used.
 A cloudflared quick-tunnel is started by default so the stream is reachable
 from anywhere — no account or login required.
+
+The HTTP UI and WebSocket stream are served on the SAME port so a single
+cloudflared tunnel covers both.  The viewer page auto-connects via
+wss://<tunnel-host>/ws  when opened over HTTPS.
 """
 import argparse
 import asyncio
@@ -50,31 +54,6 @@ def pick_device(serial: str | None) -> str:
     return device.serial
 
 
-async def serve_ui(ui_port: int):
-    """
-    Serve the ui/ directory over plain HTTP so the viewer page is
-    reachable through the cloudflared tunnel.
-    """
-    import os
-    from http.server import SimpleHTTPRequestHandler
-    import socketserver
-
-    ui_dir = os.path.join(os.path.dirname(__file__), "ui")
-
-    class Handler(SimpleHTTPRequestHandler):
-        def __init__(self, *a, **kw):
-            super().__init__(*a, directory=ui_dir, **kw)
-
-        def log_message(self, fmt, *args):
-            pass  # silence access logs
-
-    loop = asyncio.get_event_loop()
-    server = socketserver.TCPServer(("0.0.0.0", ui_port), Handler)
-    server.allow_reuse_address = True
-    logger.info("UI HTTP server listening on http://0.0.0.0:%d", ui_port)
-    await loop.run_in_executor(None, server.serve_forever)
-
-
 async def main(args):
     serial = pick_device(args.serial)
 
@@ -98,13 +77,14 @@ async def main(args):
             "EXIF stripping and location disabling still active."
         )
 
-    # ── WebSocket streamer ────────────────────────────────────────────────────
-    # Bind WS to 0.0.0.0 when tunnel is active so cloudflared can reach it
-    ws_host = "0.0.0.0" if not args.no_tunnel else args.host
+    # ── Combined HTTP + WebSocket streamer ────────────────────────────────────
+    # Both the UI (HTTP) and the live stream (WebSocket at /ws) are served
+    # on the same port so one cloudflared tunnel exposes everything.
+    ws_host = "0.0.0.0"   # always bind to all interfaces (tunnel needs this)
     streamer = ScreenStreamer(
         serial   = serial,
         ws_host  = ws_host,
-        ws_port  = args.port,
+        ws_port  = args.port,      # single unified port (default 8080)
         max_size = args.size,
         bit_rate = args.bitrate,
         fps      = args.fps,
@@ -115,19 +95,20 @@ async def main(args):
     device_label = serial.replace(":", "_")
 
     if not args.no_tunnel:
-        # Tunnel the UI HTTP port so the browser viewer is accessible remotely
         tunnel = CloudflaredTunnel(
-            local_port   = args.ui_port,
+            local_port   = args.port,   # tunnel the unified port
             device_label = device_label,
         )
         try:
             public_url = await tunnel.start()
+            viewer_url = public_url  # UI is served at /
+            ws_url     = f"{public_url.replace('https://', 'wss://')}/ws"
             logger.info("")
             logger.info("=" * 60)
             logger.info("  REMOTE ACCESS LINK for device [%s]", serial)
-            logger.info("  %s", public_url)
-            logger.info("  Share this URL to view the stream from anywhere.")
-            logger.info("  The WebSocket connects automatically through the tunnel.")
+            logger.info("  Viewer : %s", viewer_url)
+            logger.info("  WebSocket: %s", ws_url)
+            logger.info("  Share the Viewer URL — the stream connects automatically.")
             logger.info("=" * 60)
             logger.info("")
         except RuntimeError as exc:
@@ -136,15 +117,12 @@ async def main(args):
             tunnel = None
     else:
         logger.info(
-            "Tunnel disabled. Local stream at http://localhost:%d", args.ui_port
+            "Tunnel disabled. Local viewer at http://localhost:%d", args.port
         )
 
-    # ── Start UI HTTP server + WebSocket streamer concurrently ────────────────
+    # ── Start streamer (blocks until interrupted) ─────────────────────────────
     try:
-        await asyncio.gather(
-            serve_ui(args.ui_port),
-            streamer.start(),
-        )
+        await streamer.start()
     except KeyboardInterrupt:
         pass
     finally:
@@ -158,12 +136,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="USB Device Screen Streamer")
     parser.add_argument("--serial",    default=None,
                         help="ADB device serial (auto if omitted)")
-    parser.add_argument("--host",      default="127.0.0.1",
-                        help="WebSocket bind host (local-only mode)")
-    parser.add_argument("--port",      type=int, default=8765,
-                        help="WebSocket port (default 8765)")
-    parser.add_argument("--ui-port",   type=int, default=8080,
-                        help="HTTP port for UI viewer (default 8080)")
+    parser.add_argument("--port",      type=int, default=8080,
+                        help="Unified HTTP+WebSocket port (default 8080)")
     parser.add_argument("--size",      default="1280x720",
                         help="Max resolution e.g. 1280x720")
     parser.add_argument("--bitrate",   default="4M",

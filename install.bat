@@ -60,7 +60,7 @@ if %errorlevel% neq 0 (
 )
 
 :: ── 3. Python packages ───────────────────────────────────────────────────────
-call :SECTION "Python packages (websockets)"
+call :SECTION "Python packages (websockets, aiohttp)"
 if exist "%SCRIPT_DIR%requirements.txt" (
     pip install -r "%SCRIPT_DIR%requirements.txt" --quiet >nul 2>&1
     if !errorlevel! neq 0 (
@@ -69,8 +69,8 @@ if exist "%SCRIPT_DIR%requirements.txt" (
         call :OK "Python packages installed"
     )
 ) else (
-    pip install websockets --quiet >nul 2>&1
-    call :OK "websockets installed"
+    pip install websockets aiohttp --quiet >nul 2>&1
+    call :OK "websockets + aiohttp installed"
 )
 
 :: ── 4. ADB ───────────────────────────────────────────────────────────────────

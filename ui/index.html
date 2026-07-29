@@ -58,7 +58,8 @@
       border-radius: 10px;
       overflow: hidden;
       position: relative;
-      aspect-ratio: 16/9;
+      aspect-ratio: 9/16;
+      max-height: 75vh;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -92,19 +93,23 @@
       gap: 10px;
       flex-wrap: wrap;
       margin-top: 16px;
+      align-items: center;
     }
 
-    input[type="text"], input[type="number"] {
+    #ws-url-display {
+      flex: 1;
       background: #1a1a1a;
       border: 1px solid #333;
-      color: #ddd;
+      color: #666;
       padding: 7px 12px;
       border-radius: 6px;
-      font-size: 0.85rem;
-      flex: 1;
-      min-width: 120px;
+      font-size: 0.78rem;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
     }
-    input:focus { outline: none; border-color: #555; }
 
     button {
       padding: 8px 18px;
@@ -114,8 +119,10 @@
       font-weight: 600;
       cursor: pointer;
       transition: opacity 0.2s;
+      white-space: nowrap;
     }
     button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
     #btn-connect    { background: #1a6e46; color: #fff; }
     #btn-disconnect { background: #6e1a2a; color: #fff; }
     #btn-fullscreen { background: #2a2a2a; color: #ccc; border: 1px solid #444; }
@@ -138,8 +145,6 @@
     #privacy-log .ok    { color: #3d8f62; }
     #privacy-log .warn  { color: #8f7a3d; }
     #privacy-log .info  { color: #3d6e8f; }
-
-    label { font-size: 0.78rem; color: #666; align-self: center; }
   </style>
 </head>
 <body>
@@ -161,10 +166,7 @@
 </div>
 
 <div id="controls">
-  <label>WS Host</label>
-  <input type="text" id="inp-host" value="127.0.0.1" />
-  <label>Port</label>
-  <input type="number" id="inp-port" value="8765" min="1" max="65535" style="max-width:90px" />
+  <span id="ws-url-display">—</span>
   <button id="btn-connect">Connect</button>
   <button id="btn-disconnect" disabled>Disconnect</button>
   <button id="btn-fullscreen">⛶ Fullscreen</button>
@@ -182,20 +184,31 @@
   const btnConn    = document.getElementById('btn-connect');
   const btnDisc    = document.getElementById('btn-disconnect');
   const btnFull    = document.getElementById('btn-fullscreen');
-  const inpHost    = document.getElementById('inp-host');
-  const inpPort    = document.getElementById('inp-port');
+  const wsDisplay  = document.getElementById('ws-url-display');
 
   let ws        = null;
   let frameCount= 0;
-  let lastFps   = 0;
   let fpsTimer  = null;
+
+  // ── Determine WebSocket URL automatically ─────────────────────────────────
+  // When served via cloudflared (HTTPS), use wss:// on the same host at /ws.
+  // When served locally (HTTP), fall back to ws://localhost:<port>/ws.
+  function getWsUrl() {
+    const loc = window.location;
+    if (loc.protocol === 'https:') {
+      // Tunnel mode: same host, default HTTPS port (443), path /ws
+      return `wss://${loc.host}/ws`;
+    } else {
+      // Local mode: same host, same port, path /ws
+      return `ws://${loc.host}/ws`;
+    }
+  }
 
   function logEntry(msg, cls = 'info') {
     const el = document.createElement('div');
     el.className = `entry ${cls}`;
     el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
     log.prepend(el);
-    // Keep log from growing unbounded
     while (log.children.length > 80) log.removeChild(log.lastChild);
   }
 
@@ -205,11 +218,8 @@
   }
 
   function connect() {
-    const host   = inpHost.value.trim() || '127.0.0.1';
-    const port   = parseInt(inpPort.value) || 8765;
-    // Use wss:// when the page itself is served over HTTPS (i.e. via tunnel)
-    const scheme = (window.location.protocol === 'https:') ? 'wss' : 'ws';
-    const url    = `${scheme}://${host}:${port}`;
+    const url = getWsUrl();
+    wsDisplay.textContent = url;
 
     setStatus('connecting', 'Connecting…');
     logEntry(`Connecting to ${url}`, 'info');
@@ -223,7 +233,6 @@
       btnDisc.disabled = false;
       logEntry('WebSocket connected. Waiting for frames…', 'ok');
 
-      // FPS counter
       fpsTimer = setInterval(() => {
         if (frameCount > 0) {
           logEntry(`Stream: ${frameCount} fps — EXIF stripped per frame`, 'ok');
@@ -233,7 +242,6 @@
     };
 
     ws.onmessage = async (event) => {
-      // Strip any residual EXIF client-side as a second pass
       const arrayBuf = await event.data.arrayBuffer();
       const clean    = stripExif(new Uint8Array(arrayBuf));
       const blob     = new Blob([clean], { type: 'image/jpeg' });
@@ -249,7 +257,7 @@
       screen$.src = url_;
     };
 
-    ws.onerror = (e) => {
+    ws.onerror = () => {
       logEntry('WebSocket error — check server is running', 'warn');
     };
 
@@ -268,7 +276,6 @@
 
   // ── Client-side EXIF stripper (second pass safety net) ──────────────────
   function stripExif(u8) {
-    // Walk JPEG markers, drop APP1 (0xFFE1) EXIF segments
     if (u8[0] !== 0xFF || u8[1] !== 0xD8) return u8;
 
     const out = [0xFF, 0xD8];
@@ -289,7 +296,6 @@
       const segLen = (u8[i + 2] << 8) | u8[i + 3];
       const segEnd = i + 2 + segLen;
 
-      // Drop APP1 EXIF
       const isExif = marker === 0xE1 &&
         u8[i+4]===0x45 && u8[i+5]===0x78 &&
         u8[i+6]===0x69 && u8[i+7]===0x66;
@@ -300,15 +306,11 @@
     return new Uint8Array(out);
   }
 
-  // ── Auto-connect from URL params (?host=...&port=...) ───────────────────
-  // When accessed through a cloudflared tunnel the page receives
-  // ?wshost=<tunnel-host>&wsport=443&wss=1 so it can auto-connect.
-  (function autoConnect() {
-    const p = new URLSearchParams(window.location.search);
-    if (p.has('wshost')) inpHost.value = p.get('wshost');
-    if (p.has('wsport')) inpPort.value = p.get('wsport');
-    if (p.has('auto') && p.get('auto') === '1') connect();
-  })();
+  // ── Auto-connect on page load ─────────────────────────────────────────────
+  window.addEventListener('load', () => {
+    wsDisplay.textContent = getWsUrl();
+    connect();
+  });
 
   // ── Event bindings ───────────────────────────────────────────────────────
   btnConn.addEventListener('click', connect);
