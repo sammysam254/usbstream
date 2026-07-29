@@ -18,6 +18,13 @@ set "ERRORS=0"
 set "TOOLS_DIR=%USERPROFILE%\usbstream-tools"
 set "SCRIPT_DIR=%~dp0"
 
+:: If running from a temp/zip extraction, use the git repo location instead
+echo %SCRIPT_DIR% | findstr /i "Temp\\7z" >nul
+if %errorlevel%==0 (
+    set "SCRIPT_DIR=c:\dedvices\usbstream\"
+    echo  [INFO] Detected temp extraction - using repo path: %SCRIPT_DIR%
+)
+
 echo.
 echo  ==============================================
 echo   USB Stream - Auto Setup
@@ -143,73 +150,18 @@ exit
 echo   ALL DONE - Starting stream server...
 echo  ==============================================
 echo.
-
-:: Write a small helper that starts the server and captures the tunnel URL
-set "SERVER_LOG=%TEMP%\usbstream_server.log"
-set "URL_FILE=%TEMP%\usbstream_url.txt"
-if exist "%URL_FILE%" del "%URL_FILE%" >nul 2>&1
-if exist "%SERVER_LOG%" del "%SERVER_LOG%" >nul 2>&1
-
-:: Launch server with a PowerShell wrapper that shows output AND logs it
-set "LAUNCH_SCRIPT=%TEMP%\usbstream_launch.ps1"
-echo $env:PYTHONUNBUFFERED='1' > "%LAUNCH_SCRIPT%"
-echo $proc = Start-Process -FilePath 'python' -ArgumentList 'server.py' -WorkingDirectory '%SCRIPT_DIR%' -NoNewWindow -PassThru -RedirectStandardOutput '%SERVER_LOG%' -RedirectStandardError '%SERVER_LOG%' >> "%LAUNCH_SCRIPT%"
-echo Get-Content '%SERVER_LOG%' -Wait -Tail 50 >> "%LAUNCH_SCRIPT%"
-
-start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && powershell -ExecutionPolicy Bypass -File "%LAUNCH_SCRIPT%""
-
-echo   Server window opened. Watching for cloudflared tunnel URL...
-echo   (checking server log file every 2 seconds)
+echo   The cloudflared tunnel URL will appear below.
+echo   Open that URL in your browser to view the stream.
+echo.
+echo   Press Ctrl+C to stop the server.
+echo  ==============================================
 echo.
 
-:: Poll the log file for the trycloudflare URL - wait up to 30 seconds
-set "TUNNEL_URL="
-set /a WAIT=0
-:WAIT_LOOP
 timeout /t 2 /nobreak >nul
-set /a WAIT+=2
-:: Search log for trycloudflare.com URL
-for /f "tokens=*" %%L in ('findstr /i "trycloudflare.com" "%SERVER_LOG%" 2^>nul') do (
-    :: Extract just the https URL from the line
-    for /f "tokens=1,2,3,4,5 delims= " %%a in ("%%L") do (
-        if not "%%a"=="" echo %%a | findstr /i "https://" >nul 2>&1 && set "TUNNEL_URL=%%a"
-        if not "%%b"=="" echo %%b | findstr /i "https://" >nul 2>&1 && set "TUNNEL_URL=%%b"
-        if not "%%c"=="" echo %%c | findstr /i "https://" >nul 2>&1 && set "TUNNEL_URL=%%c"
-        if not "%%d"=="" echo %%d | findstr /i "https://" >nul 2>&1 && set "TUNNEL_URL=%%d"
-        if not "%%e"=="" echo %%e | findstr /i "https://" >nul 2>&1 && set "TUNNEL_URL=%%e"
-    )
-)
-if defined TUNNEL_URL goto :GOT_URL
-if %WAIT% lss 30 goto :WAIT_LOOP
 
-:: Timeout — fall back to localhost
-echo   [WARN] Tunnel URL not detected in 30s. Opening localhost viewer instead.
-set "TUNNEL_URL=http://localhost:8080"
-
-:GOT_URL
-echo.
-echo  ==============================================
-echo   STREAM READY
-echo.
-echo   Remote access link:
-echo   %TUNNEL_URL%
-echo.
-echo   Opening browser now...
-echo  ==============================================
-echo.
-
-:: Open the tunnel URL in the default browser
-:: If it's localhost, add /index.html explicitly
-echo %TUNNEL_URL% | findstr /i "localhost" >nul
-if %errorlevel%==0 (
-    start "" "%TUNNEL_URL%/index.html"
-) else (
-    start "" "%TUNNEL_URL%"
-)
-
-echo  Press any key to close this setup window (server keeps running).
-pause >nul
-exit
+:: Run server directly in this window (blocking)
+cd /d "%SCRIPT_DIR%"
+python server.py
 
 
 :: ════════════════════════════════════════════════════════════════

@@ -75,7 +75,7 @@ class ScreenStreamer:
         return subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,  # capture errors for debugging
         )
 
     # ── FFmpeg transcoder (H.264 → MJPEG) ────────────────────────────────────
