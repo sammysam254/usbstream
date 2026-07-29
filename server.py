@@ -68,9 +68,11 @@ async def serve_ui(ui_port: int):
         def log_message(self, fmt, *args):
             pass  # silence access logs
 
+    class ReuseAddrTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
     loop = asyncio.get_event_loop()
-    server = socketserver.TCPServer(("0.0.0.0", ui_port), Handler)
-    server.allow_reuse_address = True
+    server = ReuseAddrTCPServer(("0.0.0.0", ui_port), Handler)
     logger.info("UI HTTP server listening on http://0.0.0.0:%d", ui_port)
     await loop.run_in_executor(None, server.serve_forever)
 
