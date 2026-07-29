@@ -127,17 +127,19 @@ if %errorlevel% neq 0 (
 :: ── Summary + launch ─────────────────────────────────────────────────────────
 echo.
 echo  ==============================================
+if %ERRORS% gtr 0 goto :SHOW_ERRORS
+goto :START_SERVER
 
-if not %ERRORS%==0 (
-    echo   Setup finished with %ERRORS% error(s).
-    echo   Fix the errors above and re-run install.bat
-    echo  ==============================================
-    echo.
-    echo  Press any key to close...
-    pause >nul
-    exit
-)
+:SHOW_ERRORS
+echo   Setup finished with %ERRORS% error(s).
+echo   Fix the errors above and re-run install.bat
+echo  ==============================================
+echo.
+echo  Press any key to close...
+pause >nul
+exit
 
+:START_SERVER
 echo   ALL DONE - Starting stream server...
 echo  ==============================================
 echo.
