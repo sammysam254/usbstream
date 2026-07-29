@@ -11,7 +11,7 @@ title USB Stream - Auto Installer
 
 :: Prevent any accidental early exit from errorlevel cascades
 if "%1"=="--child" goto :RUN
-cmd /k "%~f0" --child
+cmd /k ""%~f0" --child"
 exit
 
 :RUN
