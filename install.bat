@@ -152,9 +152,13 @@ if exist "%SERVER_LOG%" del "%SERVER_LOG%" >nul 2>&1
 
 :: Launch server with a PowerShell wrapper that shows output AND logs it
 set "LAUNCH_SCRIPT=%TEMP%\usbstream_launch.ps1"
+set "SERVER_OUT=%TEMP%\usbstream_server_out.log"
+set "SERVER_ERR=%TEMP%\usbstream_server_err.log"
+
 echo $env:PYTHONUNBUFFERED='1' > "%LAUNCH_SCRIPT%"
-echo $proc = Start-Process -FilePath 'python' -ArgumentList 'server.py' -WorkingDirectory '%SCRIPT_DIR%' -NoNewWindow -PassThru -RedirectStandardOutput '%SERVER_LOG%' -RedirectStandardError '%SERVER_LOG%' >> "%LAUNCH_SCRIPT%"
-echo Get-Content '%SERVER_LOG%' -Wait -Tail 50 >> "%LAUNCH_SCRIPT%"
+echo $proc = Start-Process -FilePath 'python' -ArgumentList 'server.py' -WorkingDirectory '%SCRIPT_DIR%' -NoNewWindow -PassThru -RedirectStandardOutput '%SERVER_OUT%' -RedirectStandardError '%SERVER_ERR%' >> "%LAUNCH_SCRIPT%"
+echo Start-Sleep -Seconds 1 >> "%LAUNCH_SCRIPT%"
+echo Get-Content '%SERVER_OUT%','%SERVER_ERR%' -Wait -Tail 50 ^| Out-String ^| Write-Host >> "%LAUNCH_SCRIPT%"
 
 start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && powershell -ExecutionPolicy Bypass -File "%LAUNCH_SCRIPT%""
 
@@ -162,14 +166,14 @@ echo   Server window opened. Watching for cloudflared tunnel URL...
 echo   (checking server log file every 2 seconds)
 echo.
 
-:: Poll the log file for the trycloudflare URL - wait up to 30 seconds
+:: Poll the log files for the trycloudflare URL - wait up to 30 seconds
 set "TUNNEL_URL="
 set /a WAIT=0
 :WAIT_LOOP
 timeout /t 2 /nobreak >nul
 set /a WAIT+=2
-:: Search log for trycloudflare.com URL
-for /f "tokens=*" %%L in ('findstr /i "trycloudflare.com" "%SERVER_LOG%" 2^>nul') do (
+:: Search both output and error logs for trycloudflare.com URL
+for /f "tokens=*" %%L in ('findstr /i "trycloudflare.com" "%SERVER_OUT%" "%SERVER_ERR%" 2^>nul') do (
     :: Extract just the https URL from the line
     for /f "tokens=1,2,3,4,5 delims= " %%a in ("%%L") do (
         if not "%%a"=="" echo %%a | findstr /i "https://" >nul 2>&1 && set "TUNNEL_URL=%%a"
