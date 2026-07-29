@@ -1,18 +1,15 @@
 """
-Screen streamer — captures frames via scrcpy's matroska video output piped over
-ADB, encodes each frame as a JPEG via FFmpeg, strips EXIF, then broadcasts over
-WebSocket.
+Screen streamer — captures live frames from connected Android device via ADB,
+encodes each frame as a JPEG, strips EXIF, and broadcasts over WebSocket.
 
-The WebSocket endpoint is served on the SAME port as the HTTP UI server
-(via aiohttp) so a single cloudflared tunnel exposes both the viewer page
-and the live stream.  Clients connect to  wss://<tunnel-host>/ws  and the
-browser auto-detects the correct URL from window.location.
+Served via aiohttp on a single unified port (HTTP UI at / and WS at /ws) so
+a single Cloudflare tunnel exposes both.
 """
 import asyncio
 import subprocess
 import logging
 import os
-import threading
+import time
 from typing import Optional, Set
 
 from aiohttp import web
@@ -40,8 +37,6 @@ class ScreenStreamer:
         self.bit_rate = bit_rate
         self.fps      = fps
 
-        self._scrcpy_proc: Optional[subprocess.Popen] = None
-        self._ffmpeg_proc: Optional[subprocess.Popen] = None
         self._clients: Set[web.WebSocketResponse] = set()
         self._running  = False
         self._last_frame: Optional[bytes] = None
@@ -49,132 +44,68 @@ class ScreenStreamer:
         # Path to the UI static files
         self._ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
 
-    # ── Log stderr helper ─────────────────────────────────────────────────────
+    # ── Frame capture worker ──────────────────────────────────────────────────
 
-    def _log_stderr(self, proc: subprocess.Popen, name: str):
-        """Continuously read and log stderr from sub-processes."""
-        def drain():
-            if not proc.stderr:
-                return
-            for line in iter(proc.stderr.readline, b""):
-                text = line.decode(errors="replace").strip()
-                if text:
-                    logger.debug("[%s] %s", name, text)
-        t = threading.Thread(target=drain, daemon=True)
-        t.start()
-
-    # ── scrcpy process ────────────────────────────────────────────────────────
-
-    def _start_scrcpy(self) -> subprocess.Popen:
+    def _capture_single_frame(self) -> Optional[bytes]:
         """
-        Launch scrcpy outputting to stdout (-r -) in matroska format.
-        -N / --no-playback : don't open scrcpy's local window
-        -r -              : output recorded stream to stdout
-        --record-format=mkv: matroska container
-        --no-audio        : audio not needed
+        Capture a single screen frame via ADB screencap and convert to JPEG
+        using FFmpeg. Strips EXIF metadata before returning.
         """
-        max_dim = self.max_size.split('x')[0] if 'x' in self.max_size else self.max_size
-        cmd = [
-            "scrcpy",
-            "-s", self.serial,
-            "-N",
-            "-r", "-",
-            "--record-format=mkv",
-            "--no-audio",
-            "--video-codec=h264",
-            f"--max-size={max_dim}",
-            f"--video-bit-rate={self.bit_rate}",
-            f"--max-fps={self.fps}",
-        ]
-        logger.info("Launching scrcpy: %s", " ".join(cmd))
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self._log_stderr(proc, "scrcpy")
-        return proc
+        try:
+            # 1. Capture PNG frame over ADB
+            p1 = subprocess.run(
+                ["adb", "-s", self.serial, "exec-out", "screencap", "-p"],
+                capture_output=True,
+                timeout=5
+            )
+            if not p1.stdout or len(p1.stdout) < 100:
+                return None
 
-    # ── FFmpeg transcoder (Matroska → MJPEG) ──────────────────────────────────
+            # 2. Convert PNG to compact JPEG using FFmpeg
+            p2 = subprocess.run(
+                ["ffmpeg", "-loglevel", "quiet", "-i", "pipe:0",
+                 "-vf", "scale=540:-1", "-f", "mjpeg", "-q:v", "6", "pipe:1"],
+                input=p1.stdout,
+                capture_output=True,
+                timeout=5
+            )
+            if not p2.stdout or len(p2.stdout) < 100:
+                return None
 
-    def _start_ffmpeg(self, scrcpy_stdout) -> subprocess.Popen:
-        """
-        Pipe scrcpy's matroska stream through ffmpeg to produce individual
-        JPEG frames on stdout (MJPEG mux gives length-prefixed frames).
-        """
-        cmd = [
-            "ffmpeg",
-            "-loglevel", "error",
-            "-f", "matroska",
-            "-i", "pipe:0",
-            "-f", "mjpeg",
-            "-q:v", "3",       # JPEG quality (2=best, 31=worst)
-            "pipe:1",
-        ]
-        proc = subprocess.Popen(
-            cmd,
-            stdin=scrcpy_stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self._log_stderr(proc, "ffmpeg")
-        return proc
+            # 3. Strip EXIF metadata for privacy
+            return strip_exif_from_frame(p2.stdout)
+        except Exception as err:
+            logger.debug("Frame capture exception: %s", err)
+            return None
 
-    # ── MJPEG frame reader ────────────────────────────────────────────────────
+    # ── MJPEG frame producer loop ─────────────────────────────────────────────
 
     async def _frame_producer(self):
         """
-        Read MJPEG frames from ffmpeg stdout, strip EXIF, cache the latest
-        frame, and notify all connected WebSocket clients.
+        Continuously capture frames from device, cache latest frame,
+        and broadcast to all connected WebSocket clients.
         """
         loop = asyncio.get_event_loop()
-        ffmpeg = self._ffmpeg_proc
-
-        SOI = b"\xff\xd8"
-        EOI = b"\xff\xd9"
-        buf = b""
+        logger.info("[%s] Frame producer loop started.", self.serial)
 
         while self._running:
             try:
-                chunk = await loop.run_in_executor(
-                    None, ffmpeg.stdout.read, 65536
-                )
-            except Exception:
-                break
-
-            if not chunk:
-                await asyncio.sleep(0.01)
-                continue
-
-            buf += chunk
-
-            # Extract complete JPEG frames from the buffer
-            while True:
-                start = buf.find(SOI)
-                if start == -1:
-                    buf = b""
-                    break
-                end = buf.find(EOI, start + 2)
-                if end == -1:
-                    buf = buf[start:]   # keep partial frame
-                    break
-
-                frame = buf[start: end + 2]
-                buf   = buf[end + 2:]
-
-                # Strip EXIF/GPS metadata
-                clean_frame = strip_exif_from_frame(frame)
-                self._last_frame = clean_frame
-
-                # Broadcast to all connected clients
-                if self._clients:
-                    dead = set()
-                    for ws in list(self._clients):
-                        try:
-                            await ws.send_bytes(clean_frame)
-                        except Exception:
-                            dead.add(ws)
-                    self._clients -= dead
+                frame = await loop.run_in_executor(None, self._capture_single_frame)
+                if frame:
+                    self._last_frame = frame
+                    if self._clients:
+                        dead = set()
+                        for ws in list(self._clients):
+                            try:
+                                await ws.send_bytes(frame)
+                            except Exception:
+                                dead.add(ws)
+                        self._clients -= dead
+                else:
+                    await asyncio.sleep(0.1)
+            except Exception as exc:
+                logger.debug("Error in frame producer loop: %s", exc)
+                await asyncio.sleep(0.2)
 
     # ── aiohttp WebSocket handler ─────────────────────────────────────────────
 
@@ -187,12 +118,11 @@ class ScreenStreamer:
         logger.info("WS client connected: %s", request.remote)
 
         try:
-            # Send the latest cached frame immediately so the client
-            # doesn't stare at a blank screen on connect.
+            # Send the latest cached frame immediately so client sees stream at once
             if self._last_frame:
                 await ws.send_bytes(self._last_frame)
 
-            # Keep connection alive; frames arrive via _frame_producer
+            # Keep connection open; producer pushes frames to self._clients
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.ERROR:
                     logger.warning("WS error: %s", ws.exception())
@@ -212,16 +142,9 @@ class ScreenStreamer:
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def start(self):
-        """Start scrcpy, ffmpeg, and a combined HTTP+WebSocket aiohttp server."""
+        """Start combined HTTP+WebSocket aiohttp server and frame producer loop."""
         self._running = True
 
-        self._scrcpy_proc = self._start_scrcpy()
-        # Small delay to let scrcpy negotiate with the device
-        await asyncio.sleep(1.5)
-
-        self._ffmpeg_proc = self._start_ffmpeg(self._scrcpy_proc.stdout)
-
-        # Build aiohttp app — serves UI on / and WebSocket on /ws
         app = web.Application()
         app.router.add_get("/ws", self._ws_handler)
         app.router.add_get("/", self._index_handler)
@@ -233,7 +156,7 @@ class ScreenStreamer:
         await site.start()
 
         logger.info(
-            "Combined HTTP+WebSocket server on http://%s:%d  (WS at /ws)",
+            "Combined HTTP+WebSocket server listening on http://%s:%d (WS at /ws)",
             self.ws_host, self.ws_port,
         )
 
@@ -241,12 +164,5 @@ class ScreenStreamer:
         await self._frame_producer()
 
     def stop(self):
-        """Terminate streaming processes."""
+        """Stop frame producer and shutdown server."""
         self._running = False
-        for proc in (getattr(self, "_ffmpeg_proc", None),
-                     getattr(self, "_scrcpy_proc", None)):
-            if proc:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
