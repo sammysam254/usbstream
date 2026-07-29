@@ -205,9 +205,11 @@
   }
 
   function connect() {
-    const host = inpHost.value.trim() || '127.0.0.1';
-    const port = parseInt(inpPort.value) || 8765;
-    const url  = `ws://${host}:${port}`;
+    const host   = inpHost.value.trim() || '127.0.0.1';
+    const port   = parseInt(inpPort.value) || 8765;
+    // Use wss:// when the page itself is served over HTTPS (i.e. via tunnel)
+    const scheme = (window.location.protocol === 'https:') ? 'wss' : 'ws';
+    const url    = `${scheme}://${host}:${port}`;
 
     setStatus('connecting', 'Connecting…');
     logEntry(`Connecting to ${url}`, 'info');
@@ -297,6 +299,16 @@
     }
     return new Uint8Array(out);
   }
+
+  // ── Auto-connect from URL params (?host=...&port=...) ───────────────────
+  // When accessed through a cloudflared tunnel the page receives
+  // ?wshost=<tunnel-host>&wsport=443&wss=1 so it can auto-connect.
+  (function autoConnect() {
+    const p = new URLSearchParams(window.location.search);
+    if (p.has('wshost')) inpHost.value = p.get('wshost');
+    if (p.has('wsport')) inpPort.value = p.get('wsport');
+    if (p.has('auto') && p.get('auto') === '1') connect();
+  })();
 
   // ── Event bindings ───────────────────────────────────────────────────────
   btnConn.addEventListener('click', connect);

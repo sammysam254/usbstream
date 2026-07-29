@@ -96,7 +96,18 @@ if %errorlevel% neq 0 (
     )
 )
 
-:: ── 8. Verify ADB detects devices ───────────────────────────────────────────
+:: ── 8. cloudflared ───────────────────────────────────────────────────────────
+call :SECTION "cloudflared (remote access tunnels)"
+cloudflared --version >nul 2>&1
+if %errorlevel% neq 0 (
+    call :INSTALL_CLOUDFLARED
+) else (
+    for /f "tokens=3 delims= " %%v in ('cloudflared --version 2^>^&1') do (
+        call :OK "cloudflared %%v already installed"
+    )
+)
+
+:: ── 9. Verify ADB detects devices ───────────────────────────────────────────
 call :SECTION "ADB device check"
 adb devices >nul 2>&1
 if %errorlevel% neq 0 (
@@ -120,8 +131,12 @@ if %ERRORS%==0 (
     echo     1. Connect Android device via USB
     echo     2. Enable USB Debugging on device
     echo     3. Run:  python server.py
-    echo     4. Serve UI:  python -m http.server 8080 --directory ui
-    echo     5. Open:  http://localhost:8080
+    echo     4. The remote access link will be printed in the console.
+    echo     5. Share that URL to view the stream from anywhere.
+    echo.
+    echo   Local-only mode (no tunnel):
+    echo     python server.py --no-tunnel
+    echo     Then open: http://localhost:8080
 ) else (
     echo   Setup finished with %ERRORS% error(s).
     echo   Check the messages above and resolve manually.
@@ -291,4 +306,51 @@ if not defined FF_BIN set "FF_BIN=%ProgramFiles%\ffmpeg\bin"
 powershell -Command "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%FF_BIN%', 'User')"
 set "PATH=%PATH%;%FF_BIN%"
 call :OK "FFmpeg installed — PATH updated"
+exit /b 0
+
+
+:: ── Install cloudflared ──────────────────────────────────────────────────────
+:INSTALL_CLOUDFLARED
+if "%WINGET_OK%"=="1" (
+    call :WARN "cloudflared not found. Installing via winget..."
+    winget install --id Cloudflare.cloudflared --silent --accept-package-agreements --accept-source-agreements
+    if !errorlevel! neq 0 (
+        call :INSTALL_CLOUDFLARED_MANUAL
+    ) else (
+        :: Refresh system PATH so cloudflared is immediately usable
+        for /f "usebackq tokens=2*" %%A in (
+            `reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul`
+        ) do set "PATH=%%B;!PATH!"
+        call :OK "cloudflared installed via winget"
+    )
+) else (
+    call :INSTALL_CLOUDFLARED_MANUAL
+)
+exit /b 0
+
+:INSTALL_CLOUDFLARED_MANUAL
+:: Download the official Windows AMD64 binary directly from Cloudflare
+call :WARN "Downloading cloudflared binary manually..."
+set "CF_DIR=%ProgramFiles%\cloudflared"
+set "CF_EXE=%CF_DIR%\cloudflared.exe"
+
+if not exist "%CF_DIR%" (
+    powershell -Command "New-Item -ItemType Directory -Path '%CF_DIR%' -Force" >nul
+)
+
+powershell -Command ^
+    "Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile '%CF_EXE%' -UseBasicParsing"
+
+if %errorlevel% neq 0 (
+    call :ERR "Failed to download cloudflared."
+    echo         Get it manually from: https://github.com/cloudflare/cloudflared/releases
+    exit /b 1
+)
+
+:: Add to user PATH permanently
+powershell -Command ^
+    "[Environment]::SetEnvironmentVariable('PATH', [Environment]::GetEnvironmentVariable('PATH','User') + ';%CF_DIR%', 'User')"
+set "PATH=%PATH%;%CF_DIR%"
+
+call :OK "cloudflared installed to %CF_DIR% — PATH updated"
 exit /b 0
