@@ -151,7 +151,8 @@ if exist "%URL_FILE%" del "%URL_FILE%" >nul 2>&1
 if exist "%SERVER_LOG%" del "%SERVER_LOG%" >nul 2>&1
 
 :: Launch server in a new visible window, redirect output to log file
-start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && python server.py > "%SERVER_LOG%" 2>&1"
+:: Keep window open on error with || pause
+start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && (python server.py > "%SERVER_LOG%" 2>&1 || (echo. && echo SERVER CRASHED - Check error above && pause))"
 
 echo   Server window opened. Waiting for cloudflared tunnel URL...
 echo   (this takes ~10 seconds)
@@ -194,7 +195,13 @@ echo  ==============================================
 echo.
 
 :: Open the tunnel URL in the default browser
-start "" "%TUNNEL_URL%"
+:: If it's localhost, add /index.html explicitly
+echo %TUNNEL_URL% | findstr /i "localhost" >nul
+if %errorlevel%==0 (
+    start "" "%TUNNEL_URL%/index.html"
+) else (
+    start "" "%TUNNEL_URL%"
+)
 
 echo  Press any key to close this setup window (server keeps running).
 pause >nul
