@@ -18,6 +18,13 @@ set "ERRORS=0"
 set "TOOLS_DIR=%USERPROFILE%\usbstream-tools"
 set "SCRIPT_DIR=%~dp0"
 
+:: If running from a temp/zip extraction, use the git repo location instead
+echo %SCRIPT_DIR% | findstr /i "Temp\\7z" >nul
+if %errorlevel%==0 (
+    set "SCRIPT_DIR=c:\dedvices\usbstream\"
+    echo  [INFO] Detected temp extraction - using repo path: %SCRIPT_DIR%
+)
+
 echo.
 echo  ==============================================
 echo   USB Stream - Auto Setup
