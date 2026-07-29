@@ -143,42 +143,18 @@ exit
 echo   ALL DONE - Starting stream server...
 echo  ==============================================
 echo.
-
-:: Write a small helper that starts the server and captures the tunnel URL
-set "SERVER_LOG=%TEMP%\usbstream_server.log"
-set "URL_FILE=%TEMP%\usbstream_url.txt"
-if exist "%URL_FILE%" del "%URL_FILE%" >nul 2>&1
-if exist "%SERVER_LOG%" del "%SERVER_LOG%" >nul 2>&1
-
-:: Launch server directly in a visible cmd window
-start "USB Stream Server" cmd /k "cd /d "%SCRIPT_DIR%" && python server.py"
-
-echo   Server window opened. Checking for stream readiness...
+echo   The cloudflared tunnel URL will appear below.
+echo   Open that URL in your browser to view the stream.
 echo.
-
-:: For now, just open localhost directly since we can't reliably detect the tunnel URL
-:: The tunnel URL will be visible in the server window
-set "TUNNEL_URL=http://localhost:8080/index.html"
-echo.
-echo  ==============================================
-echo   STREAM STARTING
-echo.
-echo   Check the "USB Stream Server" window for:
-echo   - The cloudflared tunnel URL (https://xxx.trycloudflare.com)
-echo   - Any error messages
-echo.
-echo   Opening browser to localhost viewer...
+echo   Press Ctrl+C to stop the server.
 echo  ==============================================
 echo.
 
-timeout /t 5 /nobreak >nul
+timeout /t 2 /nobreak >nul
 
-:: Open the localhost viewer
-start "" "%TUNNEL_URL%"
-
-echo  Press any key to close this setup window (server keeps running).
-pause >nul
-exit
+:: Run server directly in this window (blocking)
+cd /d "%SCRIPT_DIR%"
+python server.py
 
 
 :: ════════════════════════════════════════════════════════════════
