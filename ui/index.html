@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>USB Stream Viewer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0d0d0d;
+      color: #e0e0e0;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+
+    header {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0 20px;
+      border-bottom: 1px solid #222;
+      margin-bottom: 20px;
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: #fff;
+    }
+
+    #status-badge {
+      font-size: 0.78rem;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-weight: 600;
+      background: #1e1e1e;
+      color: #888;
+      border: 1px solid #333;
+      transition: all 0.3s;
+    }
+    #status-badge.connected    { background: #0d2e1a; color: #4caf82; border-color: #2a6648; }
+    #status-badge.disconnected { background: #2e0d0d; color: #cf6679; border-color: #6b2233; }
+    #status-badge.connecting   { background: #1e1a0d; color: #cfb046; border-color: #6b5a22; }
+
+    #screen-wrap {
+      width: 100%;
+      max-width: 900px;
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 10px;
+      overflow: hidden;
+      position: relative;
+      aspect-ratio: 16/9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #screen {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    #placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: #444;
+      font-size: 0.9rem;
+      pointer-events: none;
+    }
+    #placeholder svg { opacity: 0.3; }
+
+    #controls {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    input[type="text"], input[type="number"] {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      color: #ddd;
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      flex: 1;
+      min-width: 120px;
+    }
+    input:focus { outline: none; border-color: #555; }
+
+    button {
+      padding: 8px 18px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:hover { opacity: 0.85; }
+    #btn-connect    { background: #1a6e46; color: #fff; }
+    #btn-disconnect { background: #6e1a2a; color: #fff; }
+    #btn-fullscreen { background: #2a2a2a; color: #ccc; border: 1px solid #444; }
+
+    #privacy-log {
+      width: 100%;
+      max-width: 900px;
+      margin-top: 20px;
+      background: #0a0a0a;
+      border: 1px solid #1e1e1e;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 0.75rem;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      color: #555;
+      max-height: 140px;
+      overflow-y: auto;
+    }
+    #privacy-log .entry { margin-bottom: 4px; }
+    #privacy-log .ok    { color: #3d8f62; }
+    #privacy-log .warn  { color: #8f7a3d; }
+    #privacy-log .info  { color: #3d6e8f; }
+
+    label { font-size: 0.78rem; color: #666; align-self: center; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⬛ USB Stream Viewer</h1>
+  <span id="status-badge" class="disconnected">Disconnected</span>
+</header>
+
+<div id="screen-wrap">
+  <img id="screen" alt="device screen" style="display:none" />
+  <div id="placeholder">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+      <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+      <line x1="12" y1="18" x2="12.01" y2="18"/>
+    </svg>
+    <span>Waiting for stream…</span>
+  </div>
+</div>
+
+<div id="controls">
+  <label>WS Host</label>
+  <input type="text" id="inp-host" value="127.0.0.1" />
+  <label>Port</label>
+  <input type="number" id="inp-port" value="8765" min="1" max="65535" style="max-width:90px" />
+  <button id="btn-connect">Connect</button>
+  <button id="btn-disconnect" disabled>Disconnect</button>
+  <button id="btn-fullscreen">⛶ Fullscreen</button>
+</div>
+
+<div id="privacy-log">
+  <div class="entry info">[ privacy log ] EXIF stripping active on all received frames.</div>
+</div>
+
+<script>
+  const screen$    = document.getElementById('screen');
+  const placeholder= document.getElementById('placeholder');
+  const badge      = document.getElementById('status-badge');
+  const log        = document.getElementById('privacy-log');
+  const btnConn    = document.getElementById('btn-connect');
+  const btnDisc    = document.getElementById('btn-disconnect');
+  const btnFull    = document.getElementById('btn-fullscreen');
+  const inpHost    = document.getElementById('inp-host');
+  const inpPort    = document.getElementById('inp-port');
+
+  let ws        = null;
+  let frameCount= 0;
+  let lastFps   = 0;
+  let fpsTimer  = null;
+
+  function logEntry(msg, cls = 'info') {
+    const el = document.createElement('div');
+    el.className = `entry ${cls}`;
+    el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    log.prepend(el);
+    // Keep log from growing unbounded
+    while (log.children.length > 80) log.removeChild(log.lastChild);
+  }
+
+  function setStatus(state, text) {
+    badge.className = state;
+    badge.textContent = text;
+  }
+
+  function connect() {
+    const host = inpHost.value.trim() || '127.0.0.1';
+    const port = parseInt(inpPort.value) || 8765;
+    const url  = `ws://${host}:${port}`;
+
+    setStatus('connecting', 'Connecting…');
+    logEntry(`Connecting to ${url}`, 'info');
+
+    ws = new WebSocket(url);
+    ws.binaryType = 'blob';
+
+    ws.onopen = () => {
+      setStatus('connected', 'Streaming');
+      btnConn.disabled = true;
+      btnDisc.disabled = false;
+      logEntry('WebSocket connected. Waiting for frames…', 'ok');
+
+      // FPS counter
+      fpsTimer = setInterval(() => {
+        if (frameCount > 0) {
+          logEntry(`Stream: ${frameCount} fps — EXIF stripped per frame`, 'ok');
+        }
+        frameCount = 0;
+      }, 1000);
+    };
+
+    ws.onmessage = async (event) => {
+      // Strip any residual EXIF client-side as a second pass
+      const arrayBuf = await event.data.arrayBuffer();
+      const clean    = stripExif(new Uint8Array(arrayBuf));
+      const blob     = new Blob([clean], { type: 'image/jpeg' });
+      const url_     = URL.createObjectURL(blob);
+      const prev     = screen$.src;
+
+      screen$.onload = () => {
+        URL.revokeObjectURL(prev);
+        placeholder.style.display = 'none';
+        screen$.style.display     = 'block';
+        frameCount++;
+      };
+      screen$.src = url_;
+    };
+
+    ws.onerror = (e) => {
+      logEntry('WebSocket error — check server is running', 'warn');
+    };
+
+    ws.onclose = () => {
+      setStatus('disconnected', 'Disconnected');
+      btnConn.disabled = false;
+      btnDisc.disabled = true;
+      clearInterval(fpsTimer);
+      logEntry('Connection closed.', 'warn');
+    };
+  }
+
+  function disconnect() {
+    if (ws) ws.close();
+  }
+
+  // ── Client-side EXIF stripper (second pass safety net) ──────────────────
+  function stripExif(u8) {
+    // Walk JPEG markers, drop APP1 (0xFFE1) EXIF segments
+    if (u8[0] !== 0xFF || u8[1] !== 0xD8) return u8;
+
+    const out = [0xFF, 0xD8];
+    let i = 2;
+
+    while (i < u8.length - 1) {
+      if (u8[i] !== 0xFF) { out.push(...u8.slice(i)); break; }
+      const marker = u8[i + 1];
+
+      if (marker === 0xD8 || marker === 0xD9) {
+        out.push(0xFF, marker);
+        i += 2;
+        continue;
+      }
+
+      if (i + 3 >= u8.length) { out.push(...u8.slice(i)); break; }
+
+      const segLen = (u8[i + 2] << 8) | u8[i + 3];
+      const segEnd = i + 2 + segLen;
+
+      // Drop APP1 EXIF
+      const isExif = marker === 0xE1 &&
+        u8[i+4]===0x45 && u8[i+5]===0x78 &&
+        u8[i+6]===0x69 && u8[i+7]===0x66;
+
+      if (!isExif) out.push(...u8.slice(i, segEnd));
+      i = segEnd;
+    }
+    return new Uint8Array(out);
+  }
+
+  // ── Event bindings ───────────────────────────────────────────────────────
+  btnConn.addEventListener('click', connect);
+  btnDisc.addEventListener('click', disconnect);
+  btnFull.addEventListener('click', () => {
+    const wrap = document.getElementById('screen-wrap');
+    if (document.fullscreenElement) document.exitFullscreen();
+    else wrap.requestFullscreen();
+  });
+</script>
+</body>
+</html>
