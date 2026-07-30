@@ -13,14 +13,7 @@ Stream and **remotely control** any Android device's screen over USB with automa
 
 **You only need ONE file to get started:**
 
-### **[📥 Click Here to Download install.bat](https://github.com/sammysam254/usbstream/releases/latest/download/install.bat)**
-
-> **Note:** If the link above doesn't work yet, use this alternative:
-> - Go to https://github.com/sammysam254/usbstream
-> - Click the green **Code** button
-> - Click **Download ZIP**
-> - Extract the ZIP file
-> - Run `install.bat` from the extracted folder
+### **[📥 Click Here to Download install.bat](https://github.com/sammysam254/usbstream/releases/download/v1.1.0/install.bat)**
 
 **How to use:**
 1. **Click** the download link above (saves `install.bat` directly to your Downloads folder)
