@@ -50,10 +50,114 @@ class ScreenStreamer:
 
     # ── scrcpy + FFmpeg video stream ─────────────────────────────────────────
 
+    async def _try_scrcpy_producer(self, running_flag: dict, last_frame_holder: dict) -> bool:
+        """
+        Attempt high-FPS scrcpy + FFmpeg stream.
+        Returns True if ran successfully, False if scrcpy fails or exits early.
+        """
+        loop = asyncio.get_event_loop()
+        scrcpy_cmd = [
+            "scrcpy",
+            "--serial", self.serial,
+            "-N",
+            "--no-audio",
+            "--max-size", "720",
+            "--video-codec=h264",
+            "--record=-",
+            "--record-format=ts"
+        ]
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-loglevel", "quiet",
+            "-i", "pipe:0",
+            "-f", "image2pipe",
+            "-vcodec", "mjpeg",
+            "-q:v", "5",
+            "pipe:1"
+        ]
+
+        try:
+            logger.info("[%s] Attempting scrcpy streaming pipeline...", self.serial)
+            scrcpy_proc = subprocess.Popen(
+                scrcpy_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            if not scrcpy_proc.stdout:
+                return False
+
+            ffmpeg_proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdin=scrcpy_proc.stdout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            scrcpy_proc.stdout.close()  # Allow scrcpy stdout EOF to reach FFmpeg on exit
+
+            await asyncio.sleep(2)
+            if scrcpy_proc.poll() is not None:
+                logger.info("[%s] scrcpy not suitable or exited early (code %s)", self.serial, scrcpy_proc.returncode)
+                try:
+                    ffmpeg_proc.kill()
+                except Exception:
+                    pass
+                return False
+
+            logger.info("[%s] scrcpy stream active!", self.serial)
+            buffer = bytearray()
+            frame_count = 0
+
+            def read_chunk():
+                return ffmpeg_proc.stdout.read(4096) if ffmpeg_proc.stdout else b""
+
+            while running_flag.get('running', False) and scrcpy_proc.poll() is None:
+                chunk = await loop.run_in_executor(None, read_chunk)
+                if not chunk:
+                    break
+                buffer.extend(chunk)
+
+                while True:
+                    start = buffer.find(b"\xff\xd8")
+                    if start == -1:
+                        buffer.clear()
+                        break
+                    end = buffer.find(b"\xff\xd9", start + 2)
+                    if end == -1:
+                        if start > 0:
+                            del buffer[:start]
+                        break
+                    
+                    frame = bytes(buffer[start:end + 2])
+                    del buffer[:end + 2]
+
+                    frame_count += 1
+                    last_frame_holder['frame'] = frame
+
+                    if self._clients:
+                        dead = set()
+                        for ws in list(self._clients):
+                            try:
+                                await ws.send_bytes(frame)
+                            except Exception:
+                                dead.add(ws)
+                        self._clients -= dead
+
+            try:
+                scrcpy_proc.terminate()
+                ffmpeg_proc.terminate()
+            except Exception:
+                pass
+
+            return frame_count > 0
+
+        except Exception as e:
+            logger.info("[%s] scrcpy stream attempt failed: %s", self.serial, e)
+            return False
+
     async def _frame_producer(self):
         """
-        Use ADB screencap method for reliable streaming on all devices.
-        Falls back from scrcpy due to MediaTek hardware encoder limitations.
+        Main frame producer entry point.
+        Attempts scrcpy streaming first; falls back to high-speed ADB raw screencap.
         """
         from .streamer_adb import adb_screencap_producer
         
@@ -87,23 +191,27 @@ class ScreenStreamer:
         logger.info("HTTP+WebSocket server listening on http://%s:%d (WS at /ws)", 
                    self.ws_host, self.ws_port)
         
-        # Use ADB screencap producer
         running_flag = {'running': self._running}
         last_frame_holder = {'frame': None, 'device_width': 1080, 'device_height': 1920}
         
-        await adb_screencap_producer(
-            self.serial,
-            self.target_fps,
-            self.max_size,
-            running_flag,
-            self._clients,
-            last_frame_holder
-        )
+        # Attempt scrcpy first
+        scrcpy_ok = await self._try_scrcpy_producer(running_flag, last_frame_holder)
         
-        # Update device resolution from producer
+        # Fallback to high-speed ADB raw screencap producer if scrcpy is unavailable or ended
+        if not scrcpy_ok and self._running:
+            logger.info("[%s] Using high-speed ADB raw screencap pipeline", self.serial)
+            await adb_screencap_producer(
+                self.serial,
+                self.target_fps,
+                self.max_size,
+                running_flag,
+                self._clients,
+                last_frame_holder
+            )
+        
         self._device_width = last_frame_holder.get('device_width', 1080)
         self._device_height = last_frame_holder.get('device_height', 1920)
-        self._last_frame = last_frame_holder['frame']
+        self._last_frame = last_frame_holder.get('frame')
 
     # ── aiohttp WebSocket handler ─────────────────────────────────────────────
 
