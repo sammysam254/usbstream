@@ -82,7 +82,7 @@ class ScreenStreamer:
         """
         cmd = [
             "ffmpeg",
-            "-loglevel", "quiet",
+            "-loglevel", "error",        # Show errors
             "-i", "pipe:0",              # Auto-detect MKV format
             "-f", "mjpeg",
             "-q:v", "3",
@@ -92,7 +92,7 @@ class ScreenStreamer:
             cmd,
             stdin=h264_input,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,      # Capture errors
         )
 
     # ── MJPEG frame producer loop ─────────────────────────────────────────────
@@ -122,7 +122,8 @@ class ScreenStreamer:
             if not chunk:
                 # Check if FFmpeg died
                 if ffmpeg.poll() is not None:
-                    logger.error("FFmpeg process died unexpectedly")
+                    stderr = ffmpeg.stderr.read().decode('utf-8', errors='ignore')
+                    logger.error("FFmpeg process died. Error: %s", stderr)
                     break
                 await asyncio.sleep(0.01)
                 continue
