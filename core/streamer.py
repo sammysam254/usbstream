@@ -60,9 +60,37 @@ class ScreenStreamer:
         # Lower bitrate for entry-level hardware encoders
         bitrate = "2M"  # MediaTek Helio P35 works better at 2M than 4M
         
+        # Pre-flight check: wake device and ensure stable connection
+        logger.info("[%s] Pre-flight check: waking device and testing connection", self.serial)
+        try:
+            # Wake device
+            subprocess.run(
+                ["adb", "-s", self.serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+                capture_output=True,
+                timeout=3
+            )
+            # Wait for stable connection
+            await asyncio.sleep(1)
+            # Test connection
+            result = subprocess.run(
+                ["adb", "-s", self.serial, "shell", "echo", "test"],
+                capture_output=True,
+                timeout=3
+            )
+            if result.returncode != 0:
+                logger.error("Device connection test failed - check USB connection")
+                self._running = False
+                return
+            logger.info("Device connection stable")
+        except Exception as e:
+            logger.error("Pre-flight check failed: %s", e)
+            self._running = False
+            return
+        
         # Start scrcpy process with mkv output
         # Removed --video-source=display (causes issues on standard Android)
         # Lowered resolution and bitrate for MediaTek hardware encoders
+        # Added --stay-awake to prevent device sleep during streaming
         scrcpy_cmd = [
             "scrcpy",
             "-s", self.serial,
@@ -72,6 +100,8 @@ class ScreenStreamer:
             "--max-fps=" + str(self.fps),
             "--no-audio",
             "--no-window",
+            "--stay-awake",
+            "--power-off-on-close=false",
             "--record=-",
             "--record-format=mkv"
         ]
