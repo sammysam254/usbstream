@@ -50,15 +50,10 @@ class ScreenStreamer:
 
     async def _frame_producer(self):
         """
-        Start scrcpy with raw video output piped to FFmpeg for JPEG conversion.
-        Optimized for MediaTek/low-end hardware (Samsung A04, etc).
+        Use ADB screencap method for reliable streaming on all devices.
+        Falls back from scrcpy due to MediaTek hardware encoder limitations.
         """
-        # Force 960 resolution for MediaTek chipsets (Helio P35)
-        # Entry-level hardware encoders can't handle 1280+ on stdout pipe
-        width = "960"
-        
-        # Lower bitrate for entry-level hardware encoders
-        bitrate = "2M"  # MediaTek Helio P35 works better at 2M than 4M
+        from .streamer_adb import adb_screencap_producer
         
         # Pre-flight check: wake device and ensure stable connection
         logger.info("[%s] Pre-flight check: waking device and testing connection", self.serial)
@@ -69,8 +64,8 @@ class ScreenStreamer:
                 capture_output=True,
                 timeout=3
             )
-            # Wait for stable connection
             await asyncio.sleep(1)
+            
             # Test connection
             result = subprocess.run(
                 ["adb", "-s", self.serial, "shell", "echo", "test"],
@@ -87,117 +82,23 @@ class ScreenStreamer:
             self._running = False
             return
         
-        # Start scrcpy process with mp4 output (better FFmpeg compatibility than mkv)
-        # Removed --video-source=display (causes issues on standard Android)
-        # Lowered resolution and bitrate for MediaTek hardware encoders
-        # -N or --no-display prevents window (v2.x+)
-        scrcpy_cmd = [
-            "scrcpy",
-            "-s", self.serial,
-            "--video-codec=h264",
-            "--max-size=" + width,
-            "--video-bit-rate=" + bitrate,
-            "--max-fps=" + str(self.fps),
-            "--no-audio",
-            "-N",  # No display/window (shorter form, more compatible)
-            "--stay-awake",
-            "--record=-",
-            "--record-format=mp4"
-        ]
+        logger.info("HTTP+WebSocket server listening on http://%s:%d (WS at /ws)", 
+                   self.ws_host, self.ws_port)
         
-        logger.info("[%s] Starting scrcpy stream: %s", self.serial, " ".join(scrcpy_cmd))
+        # Use ADB screencap producer
+        running_flag = {'running': self._running}
+        last_frame_holder = {'frame': None}
         
-        try:
-            scrcpy_proc = subprocess.Popen(
-                scrcpy_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL
-            )
-            
-            # Monitor stderr for errors
-            async def log_stderr():
-                while self._running:
-                    try:
-                        line = await asyncio.get_event_loop().run_in_executor(
-                            None, scrcpy_proc.stderr.readline
-                        )
-                        if not line:
-                            break
-                        line_str = line.decode('utf-8', errors='ignore').strip()
-                        if line_str:
-                            logger.warning("scrcpy: %s", line_str)
-                    except Exception:
-                        break
-            
-            asyncio.create_task(log_stderr())
-            
-            # Start FFmpeg to extract frames from mkv → JPEG
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-loglevel", "error",
-                "-i", "pipe:0",
-                "-f", "image2pipe",
-                "-vcodec", "mjpeg",
-                "-q:v", "5",
-                "-vf", "fps=" + str(self.fps),
-                "pipe:1"
-            ]
-            
-            ffmpeg_proc = subprocess.Popen(
-                ffmpeg_cmd,
-                stdin=scrcpy_proc.stdout,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            # Monitor FFmpeg stderr
-            async def log_ffmpeg_stderr():
-                while self._running:
-                    try:
-                        line = await asyncio.get_event_loop().run_in_executor(
-                            None, ffmpeg_proc.stderr.readline
-                        )
-                        if not line:
-                            break
-                        line_str = line.decode('utf-8', errors='ignore').strip()
-                        if line_str:
-                            logger.warning("FFmpeg: %s", line_str)
-                    except Exception:
-                        break
-            
-            asyncio.create_task(log_ffmpeg_stderr())
-            
-            scrcpy_proc.stdout.close()  # Let FFmpeg handle the scrcpy stdout
-            
-            logger.info("HTTP+WebSocket server listening on http://%s:%d (WS at /ws)", 
-                       self.ws_host, self.ws_port)
-            logger.info("Using scrcpy mp4 stream (optimized for MediaTek/low-end hardware)")
-            logger.info("Frame settings: %sx? @ %d fps, bitrate %s", width, self.fps, bitrate)
-            logger.info("[%s] Frame producer started (scrcpy stream)", self.serial)
-            
-            # Read JPEG frames from FFmpeg
-            frame_count = 0
-            buffer = b""
-            no_data_count = 0
-            
-            while self._running:
-                try:
-                    chunk = await asyncio.get_event_loop().run_in_executor(
-                        None, ffmpeg_proc.stdout.read, 65536
-                    )
-                    
-                    if not chunk:
-                        no_data_count += 1
-                        if no_data_count > 10:
-                            # Check if processes are still alive
-                            if ffmpeg_proc.poll() is not None:
-                                logger.error("FFmpeg exited with code: %s", ffmpeg_proc.poll())
-                            if scrcpy_proc.poll() is not None:
-                                logger.error("scrcpy exited with code: %s", scrcpy_proc.poll())
-                            logger.warning("FFmpeg stream ended after no data")
-                            break
-                        await asyncio.sleep(0.1)
+        await adb_screencap_producer(
+            self.serial,
+            self.target_fps,
+            self.max_size,
+            running_flag,
+            self._clients,
+            last_frame_holder
+        )
+        
+        self._last_frame = last_frame_holder['frame']
                         continue
                     
                     no_data_count = 0
