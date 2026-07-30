@@ -50,15 +50,14 @@ class ScreenStreamer:
 
     async def _frame_producer(self):
         """
-        Start scrcpy with H.264 video output piped to FFmpeg for JPEG conversion.
-        High-performance streaming with hardware encoding when available.
+        Start scrcpy with raw video output piped to FFmpeg for JPEG conversion.
+        Uses scrcpy v2.x/v3.x/v4.x compatible flags with mkv container.
         """
         # Extract width from max_size (e.g., "1280x720" → "1280")
         width = self.max_size.split('x')[0] if 'x' in self.max_size else "1280"
         
-        # Start scrcpy process
-        # Use --video-codec=h264 with --video-source=display
-        # Output to stdout using --record=- --record-format=h264
+        # Start scrcpy process with mkv output
+        # This is the most reliable format across scrcpy versions
         scrcpy_cmd = [
             "scrcpy",
             "-s", self.serial,
@@ -70,7 +69,7 @@ class ScreenStreamer:
             "--video-source=display",
             "--no-window",
             "--record=-",
-            "--record-format=h264"
+            "--record-format=mkv"
         ]
         
         logger.info("[%s] Starting scrcpy stream: %s", self.serial, " ".join(scrcpy_cmd))
@@ -83,15 +82,32 @@ class ScreenStreamer:
                 stdin=subprocess.DEVNULL
             )
             
-            # Start FFmpeg to convert H.264 → JPEG frames
+            # Monitor stderr for errors
+            async def log_stderr():
+                while self._running:
+                    try:
+                        line = await asyncio.get_event_loop().run_in_executor(
+                            None, scrcpy_proc.stderr.readline
+                        )
+                        if not line:
+                            break
+                        line_str = line.decode('utf-8', errors='ignore').strip()
+                        if line_str and 'INFO' not in line_str:
+                            logger.debug("scrcpy: %s", line_str)
+                    except Exception:
+                        break
+            
+            asyncio.create_task(log_stderr())
+            
+            # Start FFmpeg to extract frames from mkv → JPEG
             ffmpeg_cmd = [
                 "ffmpeg",
                 "-loglevel", "error",
-                "-f", "h264",
                 "-i", "pipe:0",
                 "-f", "image2pipe",
                 "-vcodec", "mjpeg",
                 "-q:v", "5",
+                "-vf", "fps=" + str(self.fps),
                 "pipe:1"
             ]
             
@@ -102,17 +118,35 @@ class ScreenStreamer:
                 stderr=subprocess.PIPE
             )
             
+            # Monitor FFmpeg stderr
+            async def log_ffmpeg_stderr():
+                while self._running:
+                    try:
+                        line = await asyncio.get_event_loop().run_in_executor(
+                            None, ffmpeg_proc.stderr.readline
+                        )
+                        if not line:
+                            break
+                        line_str = line.decode('utf-8', errors='ignore').strip()
+                        if line_str:
+                            logger.warning("FFmpeg: %s", line_str)
+                    except Exception:
+                        break
+            
+            asyncio.create_task(log_ffmpeg_stderr())
+            
             scrcpy_proc.stdout.close()  # Let FFmpeg handle the scrcpy stdout
             
             logger.info("HTTP+WebSocket server listening on http://%s:%d (WS at /ws)", 
                        self.ws_host, self.ws_port)
-            logger.info("Using scrcpy H.264 stream with FFmpeg conversion")
+            logger.info("Using scrcpy mkv stream with FFmpeg JPEG conversion")
             logger.info("Frame settings: %s @ %d fps, bitrate %s", self.max_size, self.fps, self.bit_rate)
             logger.info("[%s] Frame producer started (scrcpy stream)", self.serial)
             
             # Read JPEG frames from FFmpeg
             frame_count = 0
             buffer = b""
+            no_data_count = 0
             
             while self._running:
                 try:
@@ -121,9 +155,19 @@ class ScreenStreamer:
                     )
                     
                     if not chunk:
-                        logger.warning("FFmpeg stream ended")
-                        break
+                        no_data_count += 1
+                        if no_data_count > 10:
+                            # Check if processes are still alive
+                            if ffmpeg_proc.poll() is not None:
+                                logger.error("FFmpeg exited with code: %s", ffmpeg_proc.poll())
+                            if scrcpy_proc.poll() is not None:
+                                logger.error("scrcpy exited with code: %s", scrcpy_proc.poll())
+                            logger.warning("FFmpeg stream ended after no data")
+                            break
+                        await asyncio.sleep(0.1)
+                        continue
                     
+                    no_data_count = 0
                     buffer += chunk
                     
                     # Find JPEG markers (SOI: 0xFFD8, EOI: 0xFFD9)
