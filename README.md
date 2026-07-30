@@ -194,29 +194,62 @@ Android device (USB)
 
 ## Troubleshooting
 
-**Device not detected:**
+### Device not detected
 ```bash
 adb devices
 # If "unauthorized", check device screen for prompt
+# If "offline", run: adb kill-server && adb start-server
 ```
 
-**"Python not found":**
-- Run `install.bat` - it auto-installs Python
-- OR download from https://python.org and check "Add to PATH"
+### **Stream drops or freezes after a few minutes**
 
-**Slow stream:**
+**USB Power Saving (80% of disconnect issues):**
+- **Windows:** Control Panel → Power Options → Change Plan Settings → Advanced → USB Settings → Disable "USB Selective Suspend"
+- **Cable Quality:** Use a good quality USB cable and connect directly to motherboard/laptop port (not USB hub)
+
+**ADB Daemon Stuck:**
+```bash
+adb kill-server
+adb start-server
+adb devices
+```
+
+### **Black screen or stream won't start**
+
+1. **Check scrcpy works standalone:**
+```bash
+scrcpy -s YOUR_DEVICE_SERIAL --max-size=720
+```
+
+2. **Lower resolution/bitrate:**
 ```bash
 python server.py --size 720x1280 --bitrate 2M --fps 20
 ```
 
-**Touch not working:**
-- Check that WebSocket is connected (status badge shows "Streaming")
-- Try clicking directly on the device screen image, not the surrounding area
+3. **Check FFmpeg is installed:**
+```bash
+ffmpeg -version
+```
 
-**Cloudflared tunnel fails:**
+### **Mouse clicks not working**
+
+1. **Check logs** - Touch events should show: `Touch tap at (x, y)`
+2. **Click directly on device screen** - Not the surrounding black area
+3. **Check WebSocket is connected** - Status badge should show "Streaming"
+
+### **Slow/laggy stream**
+
+Lower settings for better performance:
+```bash
+python server.py --size 720x1280 --bitrate 2M --fps 20
+```
+
+### **Cloudflared tunnel fails**
+
+Run locally without tunnel:
 ```bash
 python server.py --no-tunnel
-# Access locally at http://localhost:8080
+# Access at http://localhost:8080
 ```
 
 ---
