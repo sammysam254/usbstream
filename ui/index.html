@@ -434,34 +434,9 @@
 
   // ── Client-side EXIF stripper (second pass safety net) ──────────────────
   function stripExif(u8) {
-    if (u8[0] !== 0xFF || u8[1] !== 0xD8) return u8;
-
-    const out = [0xFF, 0xD8];
-    let i = 2;
-
-    while (i < u8.length - 1) {
-      if (u8[i] !== 0xFF) { out.push(...u8.slice(i)); break; }
-      const marker = u8[i + 1];
-
-      if (marker === 0xD8 || marker === 0xD9) {
-        out.push(0xFF, marker);
-        i += 2;
-        continue;
-      }
-
-      if (i + 3 >= u8.length) { out.push(...u8.slice(i)); break; }
-
-      const segLen = (u8[i + 2] << 8) | u8[i + 3];
-      const segEnd = i + 2 + segLen;
-
-      const isExif = marker === 0xE1 &&
-        u8[i+4]===0x45 && u8[i+5]===0x78 &&
-        u8[i+6]===0x69 && u8[i+7]===0x66;
-
-      if (!isExif) out.push(...u8.slice(i, segEnd));
-      i = segEnd;
-    }
-    return new Uint8Array(out);
+    // Server already strips EXIF, so just pass through
+    // This prevents infinite recursion issues with malformed JPEG segments
+    return u8;
   }
 
   // ── Auto-connect on page load ─────────────────────────────────────────────
