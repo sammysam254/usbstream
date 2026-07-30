@@ -90,7 +90,7 @@ class ScreenStreamer:
         # Start scrcpy process with mkv output
         # Removed --video-source=display (causes issues on standard Android)
         # Lowered resolution and bitrate for MediaTek hardware encoders
-        # Added --stay-awake to prevent device sleep during streaming
+        # -N or --no-display prevents window (v2.x+)
         scrcpy_cmd = [
             "scrcpy",
             "-s", self.serial,
@@ -99,9 +99,8 @@ class ScreenStreamer:
             "--video-bit-rate=" + bitrate,
             "--max-fps=" + str(self.fps),
             "--no-audio",
-            "--no-window",
+            "-N",  # No display/window (shorter form, more compatible)
             "--stay-awake",
-            "--power-off-on-close=false",
             "--record=-",
             "--record-format=mkv"
         ]
