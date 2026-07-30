@@ -52,6 +52,7 @@ class ScreenStreamer:
         """
         Launch scrcpy to output H.264 stream to stdout.
         Uses --record=- to pipe video to stdout for FFmpeg processing.
+        Compatible with scrcpy 4.x
         """
         size_num = self.max_size.split('x')[0]
         cmd = [
@@ -62,10 +63,10 @@ class ScreenStreamer:
             f"--video-bit-rate={self.bit_rate}",
             f"--max-fps={self.fps}",
             "--no-audio",
-            "--no-display",
+            "--video-source=display",    # scrcpy 4.x way to specify display source
             "--record=-",                # Output to stdout
             "--record-format=h264",      # Raw H.264 format
-            "--lock-video-orientation=0",
+            "--no-window",               # Don't show scrcpy window (4.x replacement for --no-display)
         ]
         logger.info("Starting scrcpy: %s", " ".join(cmd))
         return subprocess.Popen(
