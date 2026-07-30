@@ -2,7 +2,7 @@
 Screen streamer — captures live frames from Android device via scrcpy video stream,
 encodes to JPEG, strips EXIF, and broadcasts over WebSocket with bidirectional control.
 
-Uses scrcpy for high-performance H.264 streaming with FFmpeg conversion to JPEG.
+Uses scrcpy for high-performance streaming optimized for MediaTek/entry-level hardware.
 Served via aiohttp on a single unified port (HTTP UI at / and WS at /ws).
 """
 import asyncio
@@ -51,22 +51,26 @@ class ScreenStreamer:
     async def _frame_producer(self):
         """
         Start scrcpy with raw video output piped to FFmpeg for JPEG conversion.
-        Uses scrcpy v2.x/v3.x/v4.x compatible flags with mkv container.
+        Optimized for MediaTek/low-end hardware (Samsung A04, etc).
         """
-        # Extract width from max_size (e.g., "1280x720" → "1280")
-        width = self.max_size.split('x')[0] if 'x' in self.max_size else "1280"
+        # Extract width from max_size (e.g., "1280x720" → "960")
+        # Use lower resolution for MediaTek chipsets
+        width = self.max_size.split('x')[0] if 'x' in self.max_size else "960"
+        
+        # Lower bitrate for entry-level hardware encoders
+        bitrate = "2M"  # MediaTek Helio P35 works better at 2M than 4M
         
         # Start scrcpy process with mkv output
-        # This is the most reliable format across scrcpy versions
+        # Removed --video-source=display (causes issues on standard Android)
+        # Lowered resolution and bitrate for MediaTek hardware encoders
         scrcpy_cmd = [
             "scrcpy",
             "-s", self.serial,
             "--video-codec=h264",
             "--max-size=" + width,
-            "--video-bit-rate=" + self.bit_rate,
+            "--video-bit-rate=" + bitrate,
             "--max-fps=" + str(self.fps),
             "--no-audio",
-            "--video-source=display",
             "--no-window",
             "--record=-",
             "--record-format=mkv"
@@ -139,8 +143,8 @@ class ScreenStreamer:
             
             logger.info("HTTP+WebSocket server listening on http://%s:%d (WS at /ws)", 
                        self.ws_host, self.ws_port)
-            logger.info("Using scrcpy mkv stream with FFmpeg JPEG conversion")
-            logger.info("Frame settings: %s @ %d fps, bitrate %s", self.max_size, self.fps, self.bit_rate)
+            logger.info("Using scrcpy mkv stream (optimized for MediaTek/low-end hardware)")
+            logger.info("Frame settings: %sx? @ %d fps, bitrate %s", width, self.fps, bitrate)
             logger.info("[%s] Frame producer started (scrcpy stream)", self.serial)
             
             # Read JPEG frames from FFmpeg
