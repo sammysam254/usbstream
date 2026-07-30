@@ -87,7 +87,7 @@ class ScreenStreamer:
             self._running = False
             return
         
-        # Start scrcpy process with mkv output
+        # Start scrcpy process with mp4 output (better FFmpeg compatibility than mkv)
         # Removed --video-source=display (causes issues on standard Android)
         # Lowered resolution and bitrate for MediaTek hardware encoders
         # -N or --no-display prevents window (v2.x+)
@@ -102,7 +102,7 @@ class ScreenStreamer:
             "-N",  # No display/window (shorter form, more compatible)
             "--stay-awake",
             "--record=-",
-            "--record-format=mkv"
+            "--record-format=mp4"
         ]
         
         logger.info("[%s] Starting scrcpy stream: %s", self.serial, " ".join(scrcpy_cmd))
@@ -172,7 +172,7 @@ class ScreenStreamer:
             
             logger.info("HTTP+WebSocket server listening on http://%s:%d (WS at /ws)", 
                        self.ws_host, self.ws_port)
-            logger.info("Using scrcpy mkv stream (optimized for MediaTek/low-end hardware)")
+            logger.info("Using scrcpy mp4 stream (optimized for MediaTek/low-end hardware)")
             logger.info("Frame settings: %sx? @ %d fps, bitrate %s", width, self.fps, bitrate)
             logger.info("[%s] Frame producer started (scrcpy stream)", self.serial)
             
