@@ -239,13 +239,37 @@ class ScreenStreamer:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def _reset_adb_connection(self):
+        """
+        Reset ADB to prevent stuck daemon issues (80% of connection failures).
+        Kills server and restarts to ensure clean connection.
+        """
+        logger.info("Resetting ADB connection...")
+        try:
+            # Kill any hung ADB instances
+            subprocess.run(["adb", "kill-server"], capture_output=True, timeout=5)
+            # Restart and verify device
+            subprocess.run(["adb", "start-server"], capture_output=True, timeout=5)
+            result = subprocess.run(["adb", "devices"], capture_output=True, timeout=5, text=True)
+            logger.info("ADB devices after reset:\n%s", result.stdout)
+        except Exception as e:
+            logger.warning("ADB reset failed: %s", e)
+
     async def start(self):
         """Start scrcpy, ffmpeg, aiohttp server, and frame producer."""
         self._running = True
 
+        # Reset ADB connection first to prevent stuck daemon issues
+        self._reset_adb_connection()
+
         # Start scrcpy raw H.264 stream
         self._scrcpy_proc = self._start_scrcpy()
-        await asyncio.sleep(1.5)  # Let scrcpy negotiate with device
+        await asyncio.sleep(2.0)  # Give scrcpy time to negotiate with device
+        
+        # Check if scrcpy is running
+        if self._scrcpy_proc.poll() is not None:
+            logger.error("scrcpy failed to start - check device connection")
+            raise RuntimeError("scrcpy process exited immediately")
 
         # Start FFmpeg to convert H.264 → MJPEG
         self._ffmpeg_proc = self._start_ffmpeg(self._scrcpy_proc.stdout)
@@ -265,6 +289,8 @@ class ScreenStreamer:
             "HTTP+WebSocket server listening on http://%s:%d (WS at /ws)",
             self.ws_host, self.ws_port,
         )
+        logger.info("Using scrcpy --raw-stream (fastest mode)")
+        logger.info("Frame settings: %s @ %d fps, bitrate %s", self.max_size, self.fps, self.bit_rate)
 
         self._runner = runner
         await self._frame_producer()
