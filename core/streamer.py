@@ -51,7 +51,7 @@ class ScreenStreamer:
     def _start_scrcpy(self) -> subprocess.Popen:
         """
         Launch scrcpy to output H.264 stream to stdout.
-        Uses --record=- to pipe video to stdout for FFmpeg processing.
+        Uses --record=- with mkv container to pipe video to FFmpeg.
         Compatible with scrcpy 4.x
         """
         size_num = self.max_size.split('x')[0]
@@ -65,25 +65,25 @@ class ScreenStreamer:
             "--no-audio",
             "--video-source=display",    # scrcpy 4.x way to specify display source
             "--record=-",                # Output to stdout
-            "--record-format=h264",      # Raw H.264 format
-            "--no-window",               # Don't show scrcpy window (4.x replacement for --no-display)
+            "--record-format=mkv",       # MKV container with H.264 (supported in 4.x)
+            "--no-window",               # Don't show scrcpy window
         ]
         logger.info("Starting scrcpy: %s", " ".join(cmd))
         return subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,      # Capture errors for debugging
+            stderr=subprocess.PIPE,
         )
 
     def _start_ffmpeg(self, h264_input) -> subprocess.Popen:
         """
-        Convert scrcpy's H.264 stream to MJPEG frames for WebSocket transmission.
+        Convert scrcpy's MKV stream to MJPEG frames for WebSocket transmission.
+        FFmpeg auto-detects MKV format.
         """
         cmd = [
             "ffmpeg",
             "-loglevel", "quiet",
-            "-f", "h264",
-            "-i", "pipe:0",
+            "-i", "pipe:0",              # Auto-detect MKV format
             "-f", "mjpeg",
             "-q:v", "3",
             "pipe:1",
