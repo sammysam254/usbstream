@@ -1,88 +1,172 @@
-# USB Stream — Privacy-First Device Screen Streamer
+# USB Stream — Privacy-First Interactive Device Screen Streamer
 
-Stream any Android device's screen over USB with automatic stripping of:
-- GPS / location data (disabled on-device + EXIF stripped per frame)
-- Device fingerprint fields (model, brand, serial, build fingerprint)
+Stream and **remotely control** any Android device's screen over USB with automatic privacy protection:
+- ✅ GPS / location data stripped (disabled on-device + EXIF removed per frame)
+- ✅ Device fingerprints randomized (model, brand, serial, build ID)
+- ✅ **Interactive mouse/touch control** - click, swipe, and control the device remotely
+- ✅ **Keyboard shortcuts** - Back, Home, App Switch
+- ✅ **Cloudflared tunnel** - instant remote access URL with no configuration
+
+---
+
+## Quick Start (Windows)
+
+**You only need ONE file to get started:**
+
+1. **Download** [`install.bat`](https://raw.githubusercontent.com/sammysam254/usbstream/main/install.bat)
+2. **Run it** (double-click or right-click → Run as Administrator)
+3. **Done!** — It will:
+   - Download Python, ADB, scrcpy, FFmpeg, cloudflared automatically
+   - Clone this repo from GitHub
+   - Start the server
+   - Give you a cloudflared URL to access remotely
+
+**That's it!** Open the cloudflared URL in any browser and you'll see your device screen with full touch control.
+
+---
+
+## What You Get
+
+| Feature | Description |
+|---------|-------------|
+| **Privacy Mode** | Location services disabled, GPS data stripped from every frame |
+| **Interactive Control** | Click on the stream to tap, drag to swipe, long-press for menu |
+| **Keyboard Shortcuts** | `Esc` = Back, `Home` = Home screen, `F5` = Recent Apps |
+| **Remote Access** | Cloudflared tunnel gives you `https://random-words.trycloudflare.com` link |
+| **Local Access** | Works on `http://localhost:8080` if you disable tunnel |
+| **Zero Config** | No accounts, no API keys, no port forwarding needed |
 
 ---
 
 ## Requirements
 
+- **Windows 10/11** (64-bit)
+- **Android device** with USB Debugging enabled
+- **Internet connection** (for initial setup only)
+
+> **Note:** `install.bat` handles ALL dependencies automatically. No manual installation needed.
+
+---
+
+## Manual Installation (Advanced)
+
+If you prefer to install manually or need to run on Linux/Mac:
+
+### 1. Install Dependencies
+
+### 1. Install Dependencies
+
 | Tool | Install |
 |------|---------|
 | **Python 3.11+** | https://python.org |
 | **ADB** (Android Debug Bridge) | https://developer.android.com/tools/adb |
-| **scrcpy** | https://github.com/Genymobile/scrcpy |
 | **FFmpeg** | https://ffmpeg.org/download.html |
+| **cloudflared** | https://github.com/cloudflare/cloudflared/releases |
 
-All four must be on your system `PATH`.
+All tools must be on your system `PATH`.
 
----
-
-## Setup
+### 2. Clone and Install
 
 ```bash
+git clone https://github.com/sammysam254/usbstream.git
+cd usbstream
 pip install -r requirements.txt
 ```
 
----
+### 3. Enable USB Debugging
 
-## Running
+On your Android device:
+1. Go to **Settings** → **About Phone**
+2. Tap **Build Number** 7 times to enable Developer Mode
+3. Go to **Settings** → **Developer Options**
+4. Enable **USB Debugging**
+5. Connect device via USB and authorize the computer
 
-### 1. Connect your device
-Enable **USB Debugging** on the Android device:
-Settings → Developer Options → USB Debugging ✓
+### 4. Run
 
-Plug in via USB, then verify ADB sees it:
-```bash
-adb devices
-```
-
-### 2. Start the server
 ```bash
 python server.py
 ```
 
-Options:
-```
---serial   SERIAL     ADB device serial (auto-selects first device if omitted)
---host     HOST       WebSocket bind address (default: 127.0.0.1)
---port     PORT       WebSocket port        (default: 8765)
---size     WxH        Max resolution        (default: 1280x720)
---bitrate  RATE       Video bitrate         (default: 4M)
---fps      FPS        Max framerate         (default: 30)
-```
+The server will:
+- Auto-detect your device
+- Apply privacy protections
+- Start cloudflared tunnel
+- Show you the remote access URL
 
-Example — two devices, pick one, lower bitrate for slow USB:
-```bash
-python server.py --serial R9TN100WXYZ --size 720x1280 --bitrate 2M --fps 24
-```
-
-### 3. Open the viewer
-
-Serve the UI with any static file server, e.g.:
-```bash
-python -m http.server 8080 --directory ui
-```
-Then open: **http://localhost:8080**
-
-Enter the WebSocket host/port and click **Connect**.
+**Open the URL in any browser** - you can now see and control your device!
 
 ---
 
-## Privacy protections
+## How to Use
 
-| Layer | What it does |
+### Touch/Click Controls
+
+| Action | How To |
+|--------|--------|
+| **Tap** | Click on the screen |
+| **Swipe** | Click and drag |
+| **Long Press** | Hold mouse button for 500ms → opens menu |
+| **Scroll** | Swipe up/down |
+
+### Keyboard Shortcuts
+
+| Key | Android Action |
+|-----|----------------|
+| `Esc` | Back button |
+| `Home` | Home screen |
+| `F5` | Recent Apps / Task Switcher |
+
+---
+
+## Server Options
+
+```bash
+python server.py [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--serial SERIAL` | auto | ADB device serial (auto-selects first device) |
+| `--port PORT` | 8080 | HTTP+WebSocket port |
+| `--size WxH` | 1280x720 | Max resolution |
+| `--bitrate RATE` | 4M | Video bitrate |
+| `--fps FPS` | 30 | Max frames per second |
+| `--no-tunnel` | false | Disable cloudflared (local only) |
+
+### Examples
+
+**Two devices - select one:**
+```bash
+adb devices  # list serials
+python server.py --serial R9TN100WXYZ
+```
+
+**Low bandwidth:**
+```bash
+python server.py --size 720x1280 --bitrate 2M --fps 24
+```
+
+**Local only (no tunnel):**
+```bash
+python server.py --no-tunnel
+# Access at http://localhost:8080
+```
+
+---
+
+## Privacy Protections
+
+| Layer | What It Does |
 |-------|-------------|
-| **Location disabled** | Sets `location_mode=0` and clears `location_providers_allowed` via ADB settings |
-| **Permission revoke** | Revokes `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION` from all third-party packages |
-| **Fingerprint overrides** | Overwrites `ro.product.*`, `ro.build.fingerprint`, `ro.serialno` with randomised values (requires root for full effect; attempted on all devices) |
-| **Server-side EXIF strip** | Each JPEG frame has APP1 EXIF segments removed in Python before being sent over WebSocket |
-| **Client-side EXIF strip** | Browser viewer runs a second-pass EXIF strip on every received frame before rendering |
-| **Local-only WebSocket** | Server binds to `127.0.0.1` by default — stream never leaves your machine |
+| **Location disabled** | Sets `location_mode=0` via ADB, clears location providers |
+| **Permission revoke** | Revokes `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION` from all apps |
+| **Fingerprint overrides** | Randomizes `ro.product.*`, `ro.build.fingerprint`, `ro.serialno` (requires root) |
+| **Server EXIF strip** | Removes GPS/metadata from each frame before sending |
+| **Client EXIF strip** | Browser does second-pass EXIF removal before display |
+| **Cloudflared tunnel** | Traffic encrypted via HTTPS/WSS, no exposed ports |
 
-> **Note:** Fingerprint prop overrides only persist until reboot and require a rooted device for `ro.*` props.
-> On non-rooted devices, location disabling and EXIF stripping are still fully effective.
+> **Note:** Fingerprint overrides require root and only persist until reboot. Location disabling and EXIF stripping work on all devices.
 
 ---
 
@@ -90,11 +174,97 @@ Enter the WebSocket host/port and click **Connect**.
 
 ```
 Android device (USB)
-    └─► scrcpy (raw H.264 to stdout)
-            └─► ffmpeg (H.264 → MJPEG frames)
+    └─► ADB screencap (PNG)
+            └─► FFmpeg (PNG → JPEG)
                     └─► Python EXIF stripper
-                            └─► WebSocket server (ws://127.0.0.1:8765)
-                                    └─► Browser viewer (ui/index.html)
-                                            └─► JS EXIF stripper (2nd pass)
-                                                    └─► <img> display
+                            └─► aiohttp server (HTTP + WebSocket on same port)
+                                    ├─► UI served at /
+                                    └─► WebSocket at /ws
+                                            ├─► Video frames →
+                                            └─► ← Touch/key events
+                                                    └─► ADB input tap/swipe/keyevent
 ```
+
+**Unified port design:** Both HTTP (UI) and WebSocket (stream) on port 8080, so one cloudflared tunnel exposes everything.
+
+---
+
+## Troubleshooting
+
+**Device not detected:**
+```bash
+adb devices
+# If "unauthorized", check device screen for prompt
+```
+
+**"Python not found":**
+- Run `install.bat` - it auto-installs Python
+- OR download from https://python.org and check "Add to PATH"
+
+**Slow stream:**
+```bash
+python server.py --size 720x1280 --bitrate 2M --fps 20
+```
+
+**Touch not working:**
+- Check that WebSocket is connected (status badge shows "Streaming")
+- Try clicking directly on the device screen image, not the surrounding area
+
+**Cloudflared tunnel fails:**
+```bash
+python server.py --no-tunnel
+# Access locally at http://localhost:8080
+```
+
+---
+
+## Development
+
+### File Structure
+
+```
+usbstream/
+├── install.bat           # One-click installer (downloads repo + tools)
+├── server.py             # Main entry point
+├── requirements.txt      # Python dependencies
+├── core/
+│   ├── adb_manager.py    # Device detection
+│   ├── privacy.py        # Location/fingerprint stripping
+│   ├── streamer.py       # Video capture + touch control
+│   └── tunnel.py         # Cloudflared tunnel
+└── ui/
+    └── index.html        # Browser viewer (auto-opens)
+```
+
+### Adding Features
+
+**Server-side:** Edit `core/streamer.py` → `_handle_control_event()` to add new ADB commands
+
+**Client-side:** Edit `ui/index.html` → Add event listeners and `sendControl()` calls
+
+---
+
+## License
+
+MIT License - See [LICENSE](LICENSE)
+
+---
+
+## Credits
+
+Built with:
+- [scrcpy](https://github.com/Genymobile/scrcpy) - Screen mirroring
+- [FFmpeg](https://ffmpeg.org) - Video encoding
+- [cloudflared](https://github.com/cloudflare/cloudflared) - Tunneling
+- [aiohttp](https://github.com/aio-libs/aiohttp) - Web server
+
+---
+
+## Roadmap
+
+- [ ] Audio streaming (Android audio forwarding via scrcpy 2.0+)
+- [ ] Multiple device support (switch between devices in UI)
+- [ ] Recording to file
+- [ ] Text input from keyboard
+- [ ] Clipboard sync
+- [ ] File transfer drag-drop
