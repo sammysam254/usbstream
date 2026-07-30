@@ -42,6 +42,8 @@ class ScreenStreamer:
         self._clients: Set[web.WebSocketResponse] = set()
         self._running  = False
         self._last_frame: Optional[bytes] = None
+        self._device_width: int = 1080
+        self._device_height: int = 1920
 
         # Path to the UI static files
         self._ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
@@ -87,7 +89,7 @@ class ScreenStreamer:
         
         # Use ADB screencap producer
         running_flag = {'running': self._running}
-        last_frame_holder = {'frame': None}
+        last_frame_holder = {'frame': None, 'device_width': 1080, 'device_height': 1920}
         
         await adb_screencap_producer(
             self.serial,
@@ -98,6 +100,9 @@ class ScreenStreamer:
             last_frame_holder
         )
         
+        # Update device resolution from producer
+        self._device_width = last_frame_holder.get('device_width', 1080)
+        self._device_height = last_frame_holder.get('device_height', 1920)
         self._last_frame = last_frame_holder['frame']
 
     # ── aiohttp WebSocket handler ─────────────────────────────────────────────
@@ -111,6 +116,13 @@ class ScreenStreamer:
         logger.info("WS client connected: %s", request.remote)
 
         try:
+            # Send device resolution so client can map touch coordinates correctly
+            await ws.send_str(json.dumps({
+                "type": "device_info",
+                "width": self._device_width,
+                "height": self._device_height,
+            }))
+
             # Send latest frame immediately
             if self._last_frame:
                 await ws.send_bytes(self._last_frame)
@@ -118,10 +130,8 @@ class ScreenStreamer:
             # Listen for control messages (touch/key events)
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        await self._handle_control_event(msg.data)
-                    except Exception as e:
-                        logger.error("Control event error: %s", e)
+                    # Fire-and-forget: don't block the WS loop on ADB commands
+                    asyncio.ensure_future(self._handle_control_event(msg.data))
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     logger.warning("WS error: %s", ws.exception())
                     break

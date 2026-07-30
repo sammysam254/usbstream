@@ -53,7 +53,7 @@
     #screen-wrap {
       width: 100%;
       max-width: 900px;
-      height: 75vh;
+      height: 70vh;
       background: #111;
       border: 1px solid #222;
       border-radius: 10px;
@@ -64,6 +64,8 @@
       justify-content: center;
       cursor: pointer;
       touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
     }
 
     #screen {
@@ -71,6 +73,7 @@
       max-height: 100%;
       object-fit: contain;
       display: block;
+      pointer-events: none; /* Let events pass through to wrap */
     }
 
     #placeholder {
@@ -87,13 +90,45 @@
     }
     #placeholder svg { opacity: 0.3; }
 
+    /* Navigation buttons */
+    #nav-bar {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      gap: 0;
+      margin-top: 8px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #222;
+    }
+
+    .nav-btn {
+      flex: 1;
+      padding: 14px 0;
+      background: #161616;
+      border: none;
+      color: #888;
+      font-size: 1.3rem;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border-right: 1px solid #222;
+    }
+    .nav-btn:last-child { border-right: none; }
+    .nav-btn:hover { background: #222; color: #fff; }
+    .nav-btn:active { background: #333; color: #fff; }
+    .nav-btn span { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+
     #controls {
       width: 100%;
       max-width: 900px;
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
-      margin-top: 16px;
+      margin-top: 10px;
       align-items: center;
     }
 
@@ -131,7 +166,7 @@
     #privacy-log {
       width: 100%;
       max-width: 900px;
-      margin-top: 20px;
+      margin-top: 14px;
       background: #0a0a0a;
       border: 1px solid #1e1e1e;
       border-radius: 8px;
@@ -139,13 +174,28 @@
       font-size: 0.75rem;
       font-family: 'Cascadia Code', 'Consolas', monospace;
       color: #555;
-      max-height: 140px;
+      max-height: 120px;
       overflow-y: auto;
     }
     #privacy-log .entry { margin-bottom: 4px; }
     #privacy-log .ok    { color: #3d8f62; }
     #privacy-log .warn  { color: #8f7a3d; }
     #privacy-log .info  { color: #3d6e8f; }
+
+    /* Touch ripple effect */
+    .touch-ripple {
+      position: absolute;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: rgba(76, 175, 130, 0.4);
+      pointer-events: none;
+      transform: translate(-50%, -50%) scale(0);
+      animation: ripple 0.4s ease-out forwards;
+    }
+    @keyframes ripple {
+      to { transform: translate(-50%, -50%) scale(2); opacity: 0; }
+    }
   </style>
 </head>
 <body>
@@ -164,6 +214,13 @@
     </svg>
     <span>Waiting for stream…</span>
   </div>
+</div>
+
+<!-- On-screen navigation buttons -->
+<div id="nav-bar">
+  <button class="nav-btn" id="btn-back" title="Back">◁ <span>Back</span></button>
+  <button class="nav-btn" id="btn-home" title="Home">○ <span>Home</span></button>
+  <button class="nav-btn" id="btn-recents" title="Recents">□ <span>Recents</span></button>
 </div>
 
 <div id="controls">
@@ -191,15 +248,47 @@
   let ws        = null;
   let frameCount= 0;
   let fpsTimer  = null;
-  let deviceWidth = 1080;  // Default Android screen width
-  let deviceHeight= 1920;  // Default Android screen height
+  let deviceWidth = 1080;   // Updated from server on connect
+  let deviceHeight= 1920;   // Updated from server on connect
 
-  // ── Mouse/Touch Control Functions ────────────────────────────────────────
+  // ── Coordinate Mapping (handles object-fit: contain correctly) ───────────
   function getDeviceCoordinates(clientX, clientY) {
-    const rect = screen$.getBoundingClientRect();
-    const x = ((clientX - rect.left) / rect.width) * deviceWidth;
-    const y = ((clientY - rect.top) / rect.height) * deviceHeight;
-    return { x: Math.round(x), y: Math.round(y) };
+    const imgRect = screen$.getBoundingClientRect();
+    const wrapRect = screenWrap.getBoundingClientRect();
+    
+    // The <img> with object-fit:contain may not fill its bounding box.
+    // We need to calculate the actual rendered image area within the element.
+    const imgNaturalW = screen$.naturalWidth || 1;
+    const imgNaturalH = screen$.naturalHeight || 1;
+    const imgAspect = imgNaturalW / imgNaturalH;
+    
+    let renderW, renderH, offsetX, offsetY;
+    
+    if (imgRect.width / imgRect.height > imgAspect) {
+      // Image is constrained by height (pillarboxed)
+      renderH = imgRect.height;
+      renderW = renderH * imgAspect;
+      offsetX = imgRect.left + (imgRect.width - renderW) / 2;
+      offsetY = imgRect.top;
+    } else {
+      // Image is constrained by width (letterboxed)
+      renderW = imgRect.width;
+      renderH = renderW / imgAspect;
+      offsetX = imgRect.left;
+      offsetY = imgRect.top + (imgRect.height - renderH) / 2;
+    }
+    
+    // Map click position to device coordinates
+    const relX = (clientX - offsetX) / renderW;
+    const relY = (clientY - offsetY) / renderH;
+    
+    // Clamp to valid range
+    if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null;
+    
+    return {
+      x: Math.round(relX * deviceWidth),
+      y: Math.round(relY * deviceHeight)
+    };
   }
 
   function sendControl(data) {
@@ -208,66 +297,72 @@
     }
   }
 
+  // ── Touch ripple visual feedback ─────────────────────────────────────────
+  function showRipple(clientX, clientY) {
+    const rect = screenWrap.getBoundingClientRect();
+    const ripple = document.createElement('div');
+    ripple.className = 'touch-ripple';
+    ripple.style.left = (clientX - rect.left) + 'px';
+    ripple.style.top = (clientY - rect.top) + 'px';
+    screenWrap.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 400);
+  }
+
+  // ── Mouse/Touch Control ──────────────────────────────────────────────────
   let touchStart = null;
-  let isLongPress = false;
+  let touchStartTime = 0;
   let longPressTimer = null;
 
-  // Mouse events
   screenWrap.addEventListener('mousedown', (e) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     e.preventDefault();
     const coords = getDeviceCoordinates(e.clientX, e.clientY);
-    touchStart = coords;
+    if (!coords) return;
+    touchStart = { coords, clientX: e.clientX, clientY: e.clientY };
+    touchStartTime = Date.now();
     
-    // Detect long press for context menu
     longPressTimer = setTimeout(() => {
-      isLongPress = true;
       sendControl({ type: 'key', code: 'KEYCODE_MENU' });
       logEntry('Long press → Menu', 'info');
-    }, 500);
+      touchStart = null;
+    }, 600);
   });
 
   screenWrap.addEventListener('mousemove', (e) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN || !touchStart) return;
+    if (!touchStart) return;
     e.preventDefault();
-    clearTimeout(longPressTimer);
-    isLongPress = false;
+    // Cancel long press if moved significantly
+    const dx = Math.abs(e.clientX - touchStart.clientX);
+    const dy = Math.abs(e.clientY - touchStart.clientY);
+    if (dx > 8 || dy > 8) clearTimeout(longPressTimer);
   });
 
   screenWrap.addEventListener('mouseup', (e) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !touchStart) return;
     e.preventDefault();
     clearTimeout(longPressTimer);
-    
-    const coords = getDeviceCoordinates(e.clientX, e.clientY);
-    
-    if (isLongPress) {
-      isLongPress = false;
-      touchStart = null;
-      return;
-    }
-    
-    if (touchStart) {
-      const dx = Math.abs(coords.x - touchStart.x);
-      const dy = Math.abs(coords.y - touchStart.y);
-      
-      if (dx < 10 && dy < 10) {
-        // Single tap
-        sendControl({ type: 'touch', action: 'tap', x: coords.x, y: coords.y });
-        logEntry(`Tap (${coords.x}, ${coords.y})`, 'info');
-      } else {
-        // Swipe gesture
-        sendControl({
-          type: 'touch',
-          action: 'swipe',
-          x: touchStart.x,
-          y: touchStart.y,
-          x2: coords.x,
-          y2: coords.y,
-          duration: 200
-        });
-        logEntry(`Swipe (${touchStart.x},${touchStart.y})→(${coords.x},${coords.y})`, 'info');
-      }
+
+    const endCoords = getDeviceCoordinates(e.clientX, e.clientY);
+    if (!endCoords) { touchStart = null; return; }
+
+    const dx = Math.abs(endCoords.x - touchStart.coords.x);
+    const dy = Math.abs(endCoords.y - touchStart.coords.y);
+    const elapsed = Date.now() - touchStartTime;
+
+    if (dx < 20 && dy < 20 && elapsed < 500) {
+      // Tap
+      sendControl({ type: 'touch', action: 'tap', x: endCoords.x, y: endCoords.y });
+      showRipple(e.clientX, e.clientY);
+      logEntry(`Tap (${endCoords.x}, ${endCoords.y})`, 'info');
+    } else if (dx >= 20 || dy >= 20) {
+      // Swipe
+      sendControl({
+        type: 'touch', action: 'swipe',
+        x: touchStart.coords.x, y: touchStart.coords.y,
+        x2: endCoords.x, y2: endCoords.y,
+        duration: Math.min(elapsed, 300)
+      });
+      logEntry(`Swipe (${touchStart.coords.x},${touchStart.coords.y})→(${endCoords.x},${endCoords.y})`, 'info');
     }
     touchStart = null;
   });
@@ -275,7 +370,6 @@
   screenWrap.addEventListener('mouseleave', () => {
     clearTimeout(longPressTimer);
     touchStart = null;
-    isLongPress = false;
   });
 
   // Touch events for mobile
@@ -284,67 +378,73 @@
     e.preventDefault();
     const touch = e.touches[0];
     const coords = getDeviceCoordinates(touch.clientX, touch.clientY);
-    touchStart = coords;
-    
+    if (!coords) return;
+    touchStart = { coords, clientX: touch.clientX, clientY: touch.clientY };
+    touchStartTime = Date.now();
+
     longPressTimer = setTimeout(() => {
-      isLongPress = true;
       sendControl({ type: 'key', code: 'KEYCODE_MENU' });
       logEntry('Long press → Menu', 'info');
-    }, 500);
+      touchStart = null;
+    }, 600);
   });
 
   screenWrap.addEventListener('touchmove', (e) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN || !touchStart) return;
+    if (!touchStart) return;
     e.preventDefault();
     clearTimeout(longPressTimer);
-    isLongPress = false;
   });
 
   screenWrap.addEventListener('touchend', (e) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !touchStart) return;
     e.preventDefault();
     clearTimeout(longPressTimer);
-    
-    if (isLongPress) {
-      isLongPress = false;
-      touchStart = null;
-      return;
-    }
-    
+
     const touch = e.changedTouches[0];
-    const coords = getDeviceCoordinates(touch.clientX, touch.clientY);
-    
-    if (touchStart) {
-      const dx = Math.abs(coords.x - touchStart.x);
-      const dy = Math.abs(coords.y - touchStart.y);
-      
-      if (dx < 10 && dy < 10) {
-        sendControl({ type: 'touch', action: 'tap', x: coords.x, y: coords.y });
-      } else {
-        sendControl({
-          type: 'touch',
-          action: 'swipe',
-          x: touchStart.x,
-          y: touchStart.y,
-          x2: coords.x,
-          y2: coords.y,
-          duration: 200
-        });
-      }
+    const endCoords = getDeviceCoordinates(touch.clientX, touch.clientY);
+    if (!endCoords) { touchStart = null; return; }
+
+    const dx = Math.abs(endCoords.x - touchStart.coords.x);
+    const dy = Math.abs(endCoords.y - touchStart.coords.y);
+
+    if (dx < 20 && dy < 20) {
+      sendControl({ type: 'touch', action: 'tap', x: endCoords.x, y: endCoords.y });
+      showRipple(touch.clientX, touch.clientY);
+    } else {
+      sendControl({
+        type: 'touch', action: 'swipe',
+        x: touchStart.coords.x, y: touchStart.coords.y,
+        x2: endCoords.x, y2: endCoords.y,
+        duration: 200
+      });
     }
     touchStart = null;
+  });
+
+  // ── Navigation Buttons ─────────────────────────────────────────────────────
+  document.getElementById('btn-back').addEventListener('click', () => {
+    sendControl({ type: 'key', code: 'KEYCODE_BACK' });
+    logEntry('Back', 'info');
+  });
+  document.getElementById('btn-home').addEventListener('click', () => {
+    sendControl({ type: 'key', code: 'KEYCODE_HOME' });
+    logEntry('Home', 'info');
+  });
+  document.getElementById('btn-recents').addEventListener('click', () => {
+    sendControl({ type: 'key', code: 'KEYCODE_APP_SWITCH' });
+    logEntry('Recents', 'info');
   });
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    
+
     const keyMap = {
       'Escape': 'KEYCODE_BACK',
       'Home': 'KEYCODE_HOME',
       'F5': 'KEYCODE_APP_SWITCH',
     };
-    
+
     if (keyMap[e.key]) {
       e.preventDefault();
       sendControl({ type: 'key', code: keyMap[e.key] });
@@ -352,14 +452,12 @@
     }
   });
 
-  // ── Determine WebSocket URL automatically ─────────────────────────────────
+  // ── WebSocket URL ─────────────────────────────────────────────────────────
   function getWsUrl() {
     const loc = window.location;
-    if (loc.protocol === 'https:') {
-      return `wss://${loc.host}/ws`;
-    } else {
-      return `ws://${loc.host}/ws`;
-    }
+    return (loc.protocol === 'https:')
+      ? `wss://${loc.host}/ws`
+      : `ws://${loc.host}/ws`;
   }
 
   function logEntry(msg, cls = 'info') {
@@ -378,36 +476,47 @@
   function connect() {
     const url = getWsUrl();
     wsDisplay.textContent = url;
-
     setStatus('connecting', 'Connecting…');
     logEntry(`Connecting to ${url}`, 'info');
 
     ws = new WebSocket(url);
-    ws.binaryType = 'blob';
+    ws.binaryType = 'arraybuffer';  // Faster than blob — no async conversion
 
     ws.onopen = () => {
       setStatus('connected', 'Streaming');
       btnConn.disabled = true;
       btnDisc.disabled = false;
-      logEntry('Connected — Interactive control enabled', 'ok');
+      logEntry('Connected — Touch + nav controls active', 'ok');
 
       fpsTimer = setInterval(() => {
         if (frameCount > 0) {
-          logEntry(`${frameCount} fps — EXIF stripped, touch/swipe active`, 'ok');
+          logEntry(`${frameCount} fps`, 'ok');
         }
         frameCount = 0;
       }, 1000);
     };
 
-    ws.onmessage = async (event) => {
-      const arrayBuf = await event.data.arrayBuffer();
-      const clean    = stripExif(new Uint8Array(arrayBuf));
-      const blob     = new Blob([clean], { type: 'image/jpeg' });
-      const url_     = URL.createObjectURL(blob);
-      const prev     = screen$.src;
+    ws.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        // JSON control message from server
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'device_info') {
+            deviceWidth = msg.width || 1080;
+            deviceHeight = msg.height || 1920;
+            logEntry(`Device: ${deviceWidth}×${deviceHeight}`, 'ok');
+          }
+        } catch(e) {}
+        return;
+      }
+
+      // Binary frame data — render directly (no blob conversion)
+      const blob = new Blob([event.data], { type: 'image/jpeg' });
+      const url_ = URL.createObjectURL(blob);
+      const prev = screen$.src;
 
       screen$.onload = () => {
-        URL.revokeObjectURL(prev);
+        if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
         placeholder.style.display = 'none';
         screen$.style.display     = 'block';
         frameCount++;
@@ -430,13 +539,6 @@
 
   function disconnect() {
     if (ws) ws.close();
-  }
-
-  // ── Client-side EXIF stripper (second pass safety net) ──────────────────
-  function stripExif(u8) {
-    // Server already strips EXIF, so just pass through
-    // This prevents infinite recursion issues with malformed JPEG segments
-    return u8;
   }
 
   // ── Auto-connect on page load ─────────────────────────────────────────────
