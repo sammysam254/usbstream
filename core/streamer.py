@@ -1,15 +1,15 @@
 """
-Screen streamer — captures live frames from connected Android device via ADB,
-encodes each frame as a JPEG, strips EXIF, and broadcasts over WebSocket.
+Screen streamer — captures live frames from Android device via scrcpy raw stream,
+encodes to JPEG, strips EXIF, and broadcasts over WebSocket with bidirectional control.
 
-Served via aiohttp on a single unified port (HTTP UI at / and WS at /ws) so
-a single Cloudflare tunnel exposes both.
+Uses scrcpy --raw-stream for fastest possible streaming performance.
+Served via aiohttp on a single unified port (HTTP UI at / and WS at /ws).
 """
 import asyncio
 import subprocess
 import logging
 import os
-import time
+import json
 from typing import Optional, Set
 
 from aiohttp import web
@@ -25,7 +25,7 @@ class ScreenStreamer:
         self,
         serial: str,
         ws_host: str = "0.0.0.0",
-        ws_port: int = 8080,          # unified port (HTTP + WS)
+        ws_port: int = 8080,
         max_size: str = "1280x720",
         bit_rate: str = "4M",
         fps: int = 30,
@@ -40,77 +40,121 @@ class ScreenStreamer:
         self._clients: Set[web.WebSocketResponse] = set()
         self._running  = False
         self._last_frame: Optional[bytes] = None
+        self._scrcpy_proc: Optional[subprocess.Popen] = None
+        self._ffmpeg_proc: Optional[subprocess.Popen] = None
 
         # Path to the UI static files
         self._ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
 
-    # ── Frame capture worker ──────────────────────────────────────────────────
+    # ── scrcpy raw stream capture ─────────────────────────────────────────────
 
-    def _capture_single_frame(self) -> Optional[bytes]:
+    def _start_scrcpy(self) -> subprocess.Popen:
         """
-        Capture a single screen frame via ADB screencap and convert to JPEG
-        using FFmpeg. Strips EXIF metadata before returning.
+        Launch scrcpy in raw H.264 stream mode - fastest streaming possible.
+        Output goes to stdout as raw H.264 NAL units.
         """
-        try:
-            # 1. Capture PNG frame over ADB
-            p1 = subprocess.run(
-                ["adb", "-s", self.serial, "exec-out", "screencap", "-p"],
-                capture_output=True,
-                timeout=5
-            )
-            if not p1.stdout or len(p1.stdout) < 100:
-                return None
+        size_num = self.max_size.split('x')[0]
+        cmd = [
+            "scrcpy",
+            "-s", self.serial,
+            "--video-codec=h264",
+            f"--max-size={size_num}",
+            f"--video-bit-rate={self.bit_rate}",
+            f"--max-fps={self.fps}",
+            "--no-audio",
+            "--no-display",
+            "--raw-stream",
+            "--lock-video-orientation=0",
+        ]
+        logger.info("Starting scrcpy: %s", " ".join(cmd))
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
 
-            # 2. Convert PNG to compact JPEG using FFmpeg
-            p2 = subprocess.run(
-                ["ffmpeg", "-loglevel", "quiet", "-i", "pipe:0",
-                 "-vf", "scale=540:-1", "-f", "mjpeg", "-q:v", "6", "pipe:1"],
-                input=p1.stdout,
-                capture_output=True,
-                timeout=5
-            )
-            if not p2.stdout or len(p2.stdout) < 100:
-                return None
-
-            # 3. Strip EXIF metadata for privacy
-            return strip_exif_from_frame(p2.stdout)
-        except Exception as err:
-            logger.debug("Frame capture exception: %s", err)
-            return None
+    def _start_ffmpeg(self, h264_input) -> subprocess.Popen:
+        """
+        Convert scrcpy's H.264 stream to MJPEG frames for WebSocket transmission.
+        """
+        cmd = [
+            "ffmpeg",
+            "-loglevel", "quiet",
+            "-f", "h264",
+            "-i", "pipe:0",
+            "-f", "mjpeg",
+            "-q:v", "3",
+            "pipe:1",
+        ]
+        return subprocess.Popen(
+            cmd,
+            stdin=h264_input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
 
     # ── MJPEG frame producer loop ─────────────────────────────────────────────
 
     async def _frame_producer(self):
         """
-        Continuously capture frames from device, cache latest frame,
+        Read MJPEG frames from FFmpeg, strip EXIF, cache latest frame,
         and broadcast to all connected WebSocket clients.
         """
         loop = asyncio.get_event_loop()
-        logger.info("[%s] Frame producer loop started.", self.serial)
+        ffmpeg = self._ffmpeg_proc
+
+        SOI = b"\xff\xd8"  # JPEG Start Of Image
+        EOI = b"\xff\xd9"  # JPEG End Of Image
+        buf = b""
+
+        logger.info("[%s] Frame producer started (scrcpy raw stream)", self.serial)
 
         while self._running:
             try:
-                frame = await loop.run_in_executor(None, self._capture_single_frame)
-                if frame:
-                    self._last_frame = frame
-                    if self._clients:
-                        dead = set()
-                        for ws in list(self._clients):
-                            try:
-                                await ws.send_bytes(frame)
-                            except Exception:
-                                dead.add(ws)
-                        self._clients -= dead
-                else:
-                    await asyncio.sleep(0.1)
-            except Exception as exc:
-                logger.debug("Error in frame producer loop: %s", exc)
-                await asyncio.sleep(0.2)
+                chunk = await loop.run_in_executor(None, ffmpeg.stdout.read, 65536)
+            except Exception as e:
+                logger.error("Frame read error: %s", e)
+                break
+
+            if not chunk:
+                await asyncio.sleep(0.01)
+                continue
+
+            buf += chunk
+
+            # Extract complete JPEG frames from buffer
+            while True:
+                start = buf.find(SOI)
+                if start == -1:
+                    buf = b""
+                    break
+
+                end = buf.find(EOI, start + 2)
+                if end == -1:
+                    buf = buf[start:]  # Keep partial frame
+                    break
+
+                frame = buf[start: end + 2]
+                buf = buf[end + 2:]
+
+                # Strip EXIF/GPS metadata for privacy
+                clean_frame = strip_exif_from_frame(frame)
+                self._last_frame = clean_frame
+
+                # Broadcast to all connected clients
+                if self._clients:
+                    dead = set()
+                    for ws in list(self._clients):
+                        try:
+                            await ws.send_bytes(clean_frame)
+                        except Exception:
+                            dead.add(ws)
+                    self._clients -= dead
 
     # ── aiohttp WebSocket handler ─────────────────────────────────────────────
 
     async def _ws_handler(self, request: web.Request) -> web.WebSocketResponse:
-        """Handle a new WebSocket client connection at /ws."""
+        """Handle WebSocket client at /ws - bidirectional video + control."""
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
@@ -118,17 +162,17 @@ class ScreenStreamer:
         logger.info("WS client connected: %s", request.remote)
 
         try:
-            # Send the latest cached frame immediately so client sees stream at once
+            # Send latest frame immediately
             if self._last_frame:
                 await ws.send_bytes(self._last_frame)
 
-            # Listen for control messages (touch/key events) from client
+            # Listen for control messages (touch/key events)
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     try:
                         await self._handle_control_event(msg.data)
                     except Exception as e:
-                        logger.warning("Control event error: %s", e)
+                        logger.error("Control event error: %s", e)
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     logger.warning("WS error: %s", ws.exception())
                     break
@@ -139,66 +183,55 @@ class ScreenStreamer:
         return ws
 
     async def _handle_control_event(self, message: str):
-        """Handle touch/mouse/keyboard events from the browser."""
-        import json
+        """Handle touch/mouse/keyboard events from browser."""
+        loop = asyncio.get_event_loop()
+        
         try:
             event = json.loads(message)
             event_type = event.get("type")
             
             if event_type == "touch":
-                # Handle touch/click events
                 x = int(event.get("x", 0))
                 y = int(event.get("y", 0))
                 action = event.get("action", "tap")
                 
                 if action == "tap":
                     # Single tap
-                    subprocess.run(
-                        ["adb", "-s", self.serial, "shell", "input", "tap", str(x), str(y)],
-                        capture_output=True, timeout=2
-                    )
-                    logger.debug("Touch tap at (%d, %d)", x, y)
+                    cmd = ["adb", "-s", self.serial, "shell", "input", "tap", str(x), str(y)]
+                    await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True, timeout=1))
+                    logger.info("Touch tap at (%d, %d)", x, y)
                     
                 elif action == "swipe":
-                    # Swipe from (x, y) to (x2, y2)
+                    # Swipe gesture
                     x2 = int(event.get("x2", x))
                     y2 = int(event.get("y2", y))
                     duration = int(event.get("duration", 100))
-                    subprocess.run(
-                        ["adb", "-s", self.serial, "shell", "input", "swipe",
-                         str(x), str(y), str(x2), str(y2), str(duration)],
-                        capture_output=True, timeout=2
-                    )
-                    logger.debug("Swipe from (%d, %d) to (%d, %d)", x, y, x2, y2)
+                    cmd = ["adb", "-s", self.serial, "shell", "input", "swipe",
+                           str(x), str(y), str(x2), str(y2), str(duration)]
+                    await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True, timeout=1))
+                    logger.info("Swipe (%d,%d) → (%d,%d)", x, y, x2, y2)
                     
             elif event_type == "key":
-                # Handle key events (back, home, etc.)
                 key_code = event.get("code")
                 if key_code:
-                    subprocess.run(
-                        ["adb", "-s", self.serial, "shell", "input", "keyevent", str(key_code)],
-                        capture_output=True, timeout=2
-                    )
-                    logger.debug("Key event: %s", key_code)
+                    cmd = ["adb", "-s", self.serial, "shell", "input", "keyevent", str(key_code)]
+                    await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True, timeout=1))
+                    logger.info("Key event: %s", key_code)
                     
             elif event_type == "text":
-                # Handle text input
                 text = event.get("text", "")
                 if text:
-                    # Escape special characters for shell
-                    text_escaped = text.replace('"', '\\"').replace("'", "\\'").replace(" ", "%s")
-                    subprocess.run(
-                        ["adb", "-s", self.serial, "shell", "input", "text", text_escaped],
-                        capture_output=True, timeout=2
-                    )
-                    logger.debug("Text input: %s", text)
+                    text_escaped = text.replace(" ", "%s")
+                    cmd = ["adb", "-s", self.serial, "shell", "input", "text", text_escaped]
+                    await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True, timeout=1))
+                    logger.info("Text input: %s", text)
                     
         except json.JSONDecodeError:
             logger.warning("Invalid JSON in control event")
         except Exception as e:
-            logger.warning("Control event processing error: %s", e)
+            logger.error("Control event processing error: %s", e)
 
-    # ── aiohttp static file handler ───────────────────────────────────────────
+    # ── aiohttp handlers ──────────────────────────────────────────────────────
 
     async def _index_handler(self, request: web.Request) -> web.FileResponse:
         """Serve the UI index.html."""
@@ -207,9 +240,17 @@ class ScreenStreamer:
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def start(self):
-        """Start combined HTTP+WebSocket aiohttp server and frame producer loop."""
+        """Start scrcpy, ffmpeg, aiohttp server, and frame producer."""
         self._running = True
 
+        # Start scrcpy raw H.264 stream
+        self._scrcpy_proc = self._start_scrcpy()
+        await asyncio.sleep(1.5)  # Let scrcpy negotiate with device
+
+        # Start FFmpeg to convert H.264 → MJPEG
+        self._ffmpeg_proc = self._start_ffmpeg(self._scrcpy_proc.stdout)
+
+        # Start aiohttp HTTP + WebSocket server
         app = web.Application()
         app.router.add_get("/ws", self._ws_handler)
         app.router.add_get("/", self._index_handler)
@@ -221,7 +262,7 @@ class ScreenStreamer:
         await site.start()
 
         logger.info(
-            "Combined HTTP+WebSocket server listening on http://%s:%d (WS at /ws)",
+            "HTTP+WebSocket server listening on http://%s:%d (WS at /ws)",
             self.ws_host, self.ws_port,
         )
 
@@ -229,5 +270,12 @@ class ScreenStreamer:
         await self._frame_producer()
 
     def stop(self):
-        """Stop frame producer and shutdown server."""
+        """Stop all streaming processes."""
         self._running = False
+        for proc in (self._ffmpeg_proc, self._scrcpy_proc):
+            if proc:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
