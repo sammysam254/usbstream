@@ -99,69 +99,6 @@ class ScreenStreamer:
         )
         
         self._last_frame = last_frame_holder['frame']
-                        continue
-                    
-                    no_data_count = 0
-                    buffer += chunk
-                    
-                    # Find JPEG markers (SOI: 0xFFD8, EOI: 0xFFD9)
-                    while True:
-                        start = buffer.find(b'\xff\xd8')
-                        if start == -1:
-                            buffer = buffer[-2:]  # Keep last 2 bytes for next search
-                            break
-                        
-                        end = buffer.find(b'\xff\xd9', start + 2)
-                        if end == -1:
-                            # Incomplete frame, wait for more data
-                            break
-                        
-                        # Extract complete JPEG frame
-                        frame = buffer[start:end + 2]
-                        buffer = buffer[end + 2:]
-                        
-                        # Strip EXIF and broadcast
-                        frame_clean = strip_exif_from_frame(frame)
-                        frame_count += 1
-                        self._last_frame = frame_clean
-                        
-                        if frame_count == 1:
-                            logger.info("First frame captured: %d bytes", len(frame_clean))
-                        elif frame_count % 300 == 0:
-                            logger.info("Frame %d: streaming from scrcpy", frame_count)
-                        
-                        # Broadcast to clients
-                        if self._clients:
-                            dead = set()
-                            for ws in list(self._clients):
-                                try:
-                                    await ws.send_bytes(frame_clean)
-                                except Exception:
-                                    dead.add(ws)
-                            self._clients -= dead
-                
-                except Exception as e:
-                    logger.error("Frame processing error: %s", e)
-                    await asyncio.sleep(0.1)
-            
-            # Cleanup
-            ffmpeg_proc.terminate()
-            scrcpy_proc.terminate()
-            try:
-                ffmpeg_proc.wait(timeout=2)
-                scrcpy_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                ffmpeg_proc.kill()
-                scrcpy_proc.kill()
-            
-            logger.info("Frame producer stopped")
-            
-        except FileNotFoundError:
-            logger.error("scrcpy not found - please install scrcpy")
-            self._running = False
-        except Exception as e:
-            logger.error("Frame producer error: %s", e)
-            self._running = False
 
     # ── aiohttp WebSocket handler ─────────────────────────────────────────────
 
