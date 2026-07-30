@@ -1,8 +1,8 @@
 """
-Screen streamer — captures live frames from Android device via scrcpy raw stream,
+Screen streamer — captures live frames from Android device via scrcpy,
 encodes to JPEG, strips EXIF, and broadcasts over WebSocket with bidirectional control.
 
-Uses scrcpy --raw-stream for fastest possible streaming performance.
+Uses scrcpy --record=- (H.264 to stdout) for fastest possible streaming performance.
 Served via aiohttp on a single unified port (HTTP UI at / and WS at /ws).
 """
 import asyncio
@@ -50,8 +50,8 @@ class ScreenStreamer:
 
     def _start_scrcpy(self) -> subprocess.Popen:
         """
-        Launch scrcpy in raw H.264 stream mode - fastest streaming possible.
-        Output goes to stdout as raw H.264 NAL units.
+        Launch scrcpy to output H.264 stream to stdout.
+        Uses --record=- to pipe video to stdout for FFmpeg processing.
         """
         size_num = self.max_size.split('x')[0]
         cmd = [
@@ -63,14 +63,15 @@ class ScreenStreamer:
             f"--max-fps={self.fps}",
             "--no-audio",
             "--no-display",
-            "--raw-stream",
+            "--record=-",                # Output to stdout
+            "--record-format=h264",      # Raw H.264 format
             "--lock-video-orientation=0",
         ]
         logger.info("Starting scrcpy: %s", " ".join(cmd))
         return subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,      # Capture errors for debugging
         )
 
     def _start_ffmpeg(self, h264_input) -> subprocess.Popen:
@@ -262,14 +263,16 @@ class ScreenStreamer:
         # Reset ADB connection first to prevent stuck daemon issues
         self._reset_adb_connection()
 
-        # Start scrcpy raw H.264 stream
+        # Start scrcpy H.264 stream to stdout
         self._scrcpy_proc = self._start_scrcpy()
         await asyncio.sleep(2.0)  # Give scrcpy time to negotiate with device
         
         # Check if scrcpy is running
         if self._scrcpy_proc.poll() is not None:
-            logger.error("scrcpy failed to start - check device connection")
-            raise RuntimeError("scrcpy process exited immediately")
+            stderr_output = self._scrcpy_proc.stderr.read().decode('utf-8', errors='ignore')
+            logger.error("scrcpy failed to start. Error output:")
+            logger.error(stderr_output)
+            raise RuntimeError(f"scrcpy process exited immediately: {stderr_output[:200]}")
 
         # Start FFmpeg to convert H.264 → MJPEG
         self._ffmpeg_proc = self._start_ffmpeg(self._scrcpy_proc.stdout)
@@ -289,7 +292,7 @@ class ScreenStreamer:
             "HTTP+WebSocket server listening on http://%s:%d (WS at /ws)",
             self.ws_host, self.ws_port,
         )
-        logger.info("Using scrcpy --raw-stream (fastest mode)")
+        logger.info("Using scrcpy --record=- (H.264 to stdout)")
         logger.info("Frame settings: %s @ %d fps, bitrate %s", self.max_size, self.fps, self.bit_rate)
 
         self._runner = runner
