@@ -62,6 +62,8 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      cursor: pointer;
+      touch-action: none;
     }
 
     #screen {
@@ -177,6 +179,7 @@
 
 <script>
   const screen$    = document.getElementById('screen');
+  const screenWrap = document.getElementById('screen-wrap');
   const placeholder= document.getElementById('placeholder');
   const badge      = document.getElementById('status-badge');
   const log        = document.getElementById('privacy-log');
@@ -188,17 +191,173 @@
   let ws        = null;
   let frameCount= 0;
   let fpsTimer  = null;
+  let deviceWidth = 1080;  // Default Android screen width
+  let deviceHeight= 1920;  // Default Android screen height
+
+  // ── Mouse/Touch Control Functions ────────────────────────────────────────
+  function getDeviceCoordinates(clientX, clientY) {
+    const rect = screen$.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * deviceWidth;
+    const y = ((clientY - rect.top) / rect.height) * deviceHeight;
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+
+  function sendControl(data) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
+    }
+  }
+
+  let touchStart = null;
+  let isLongPress = false;
+  let longPressTimer = null;
+
+  // Mouse events
+  screenWrap.addEventListener('mousedown', (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    e.preventDefault();
+    const coords = getDeviceCoordinates(e.clientX, e.clientY);
+    touchStart = coords;
+    
+    // Detect long press for context menu
+    longPressTimer = setTimeout(() => {
+      isLongPress = true;
+      sendControl({ type: 'key', code: 'KEYCODE_MENU' });
+      logEntry('Long press → Menu', 'info');
+    }, 500);
+  });
+
+  screenWrap.addEventListener('mousemove', (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !touchStart) return;
+    e.preventDefault();
+    clearTimeout(longPressTimer);
+    isLongPress = false;
+  });
+
+  screenWrap.addEventListener('mouseup', (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    e.preventDefault();
+    clearTimeout(longPressTimer);
+    
+    const coords = getDeviceCoordinates(e.clientX, e.clientY);
+    
+    if (isLongPress) {
+      isLongPress = false;
+      touchStart = null;
+      return;
+    }
+    
+    if (touchStart) {
+      const dx = Math.abs(coords.x - touchStart.x);
+      const dy = Math.abs(coords.y - touchStart.y);
+      
+      if (dx < 10 && dy < 10) {
+        // Single tap
+        sendControl({ type: 'touch', action: 'tap', x: coords.x, y: coords.y });
+        logEntry(`Tap (${coords.x}, ${coords.y})`, 'info');
+      } else {
+        // Swipe gesture
+        sendControl({
+          type: 'touch',
+          action: 'swipe',
+          x: touchStart.x,
+          y: touchStart.y,
+          x2: coords.x,
+          y2: coords.y,
+          duration: 200
+        });
+        logEntry(`Swipe (${touchStart.x},${touchStart.y})→(${coords.x},${coords.y})`, 'info');
+      }
+    }
+    touchStart = null;
+  });
+
+  screenWrap.addEventListener('mouseleave', () => {
+    clearTimeout(longPressTimer);
+    touchStart = null;
+    isLongPress = false;
+  });
+
+  // Touch events for mobile
+  screenWrap.addEventListener('touchstart', (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    const coords = getDeviceCoordinates(touch.clientX, touch.clientY);
+    touchStart = coords;
+    
+    longPressTimer = setTimeout(() => {
+      isLongPress = true;
+      sendControl({ type: 'key', code: 'KEYCODE_MENU' });
+      logEntry('Long press → Menu', 'info');
+    }, 500);
+  });
+
+  screenWrap.addEventListener('touchmove', (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !touchStart) return;
+    e.preventDefault();
+    clearTimeout(longPressTimer);
+    isLongPress = false;
+  });
+
+  screenWrap.addEventListener('touchend', (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    e.preventDefault();
+    clearTimeout(longPressTimer);
+    
+    if (isLongPress) {
+      isLongPress = false;
+      touchStart = null;
+      return;
+    }
+    
+    const touch = e.changedTouches[0];
+    const coords = getDeviceCoordinates(touch.clientX, touch.clientY);
+    
+    if (touchStart) {
+      const dx = Math.abs(coords.x - touchStart.x);
+      const dy = Math.abs(coords.y - touchStart.y);
+      
+      if (dx < 10 && dy < 10) {
+        sendControl({ type: 'touch', action: 'tap', x: coords.x, y: coords.y });
+      } else {
+        sendControl({
+          type: 'touch',
+          action: 'swipe',
+          x: touchStart.x,
+          y: touchStart.y,
+          x2: coords.x,
+          y2: coords.y,
+          duration: 200
+        });
+      }
+    }
+    touchStart = null;
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    
+    const keyMap = {
+      'Escape': 'KEYCODE_BACK',
+      'Home': 'KEYCODE_HOME',
+      'F5': 'KEYCODE_APP_SWITCH',
+    };
+    
+    if (keyMap[e.key]) {
+      e.preventDefault();
+      sendControl({ type: 'key', code: keyMap[e.key] });
+      logEntry(`Key: ${e.key}`, 'info');
+    }
+  });
 
   // ── Determine WebSocket URL automatically ─────────────────────────────────
-  // When served via cloudflared (HTTPS), use wss:// on the same host at /ws.
-  // When served locally (HTTP), fall back to ws://localhost:<port>/ws.
   function getWsUrl() {
     const loc = window.location;
     if (loc.protocol === 'https:') {
-      // Tunnel mode: same host, default HTTPS port (443), path /ws
       return `wss://${loc.host}/ws`;
     } else {
-      // Local mode: same host, same port, path /ws
       return `ws://${loc.host}/ws`;
     }
   }
@@ -230,11 +389,11 @@
       setStatus('connected', 'Streaming');
       btnConn.disabled = true;
       btnDisc.disabled = false;
-      logEntry('WebSocket connected. Waiting for frames…', 'ok');
+      logEntry('Connected — Interactive control enabled', 'ok');
 
       fpsTimer = setInterval(() => {
         if (frameCount > 0) {
-          logEntry(`Stream: ${frameCount} fps — EXIF stripped per frame`, 'ok');
+          logEntry(`${frameCount} fps — EXIF stripped, touch/swipe active`, 'ok');
         }
         frameCount = 0;
       }, 1000);

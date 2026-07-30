@@ -122,9 +122,14 @@ class ScreenStreamer:
             if self._last_frame:
                 await ws.send_bytes(self._last_frame)
 
-            # Keep connection open; producer pushes frames to self._clients
+            # Listen for control messages (touch/key events) from client
             async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.ERROR:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        await self._handle_control_event(msg.data)
+                    except Exception as e:
+                        logger.warning("Control event error: %s", e)
+                elif msg.type == aiohttp.WSMsgType.ERROR:
                     logger.warning("WS error: %s", ws.exception())
                     break
         finally:
@@ -132,6 +137,66 @@ class ScreenStreamer:
             logger.info("WS client disconnected: %s", request.remote)
 
         return ws
+
+    async def _handle_control_event(self, message: str):
+        """Handle touch/mouse/keyboard events from the browser."""
+        import json
+        try:
+            event = json.loads(message)
+            event_type = event.get("type")
+            
+            if event_type == "touch":
+                # Handle touch/click events
+                x = int(event.get("x", 0))
+                y = int(event.get("y", 0))
+                action = event.get("action", "tap")
+                
+                if action == "tap":
+                    # Single tap
+                    subprocess.run(
+                        ["adb", "-s", self.serial, "shell", "input", "tap", str(x), str(y)],
+                        capture_output=True, timeout=2
+                    )
+                    logger.debug("Touch tap at (%d, %d)", x, y)
+                    
+                elif action == "swipe":
+                    # Swipe from (x, y) to (x2, y2)
+                    x2 = int(event.get("x2", x))
+                    y2 = int(event.get("y2", y))
+                    duration = int(event.get("duration", 100))
+                    subprocess.run(
+                        ["adb", "-s", self.serial, "shell", "input", "swipe",
+                         str(x), str(y), str(x2), str(y2), str(duration)],
+                        capture_output=True, timeout=2
+                    )
+                    logger.debug("Swipe from (%d, %d) to (%d, %d)", x, y, x2, y2)
+                    
+            elif event_type == "key":
+                # Handle key events (back, home, etc.)
+                key_code = event.get("code")
+                if key_code:
+                    subprocess.run(
+                        ["adb", "-s", self.serial, "shell", "input", "keyevent", str(key_code)],
+                        capture_output=True, timeout=2
+                    )
+                    logger.debug("Key event: %s", key_code)
+                    
+            elif event_type == "text":
+                # Handle text input
+                text = event.get("text", "")
+                if text:
+                    # Escape special characters for shell
+                    text_escaped = text.replace('"', '\\"').replace("'", "\\'").replace(" ", "%s")
+                    subprocess.run(
+                        ["adb", "-s", self.serial, "shell", "input", "text", text_escaped],
+                        capture_output=True, timeout=2
+                    )
+                    logger.debug("Text input: %s", text)
+                    
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in control event")
+        except Exception as e:
+            logger.warning("Control event processing error: %s", e)
 
     # ── aiohttp static file handler ───────────────────────────────────────────
 
