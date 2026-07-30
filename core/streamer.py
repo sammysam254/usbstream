@@ -108,6 +108,7 @@ class ScreenStreamer:
         SOI = b"\xff\xd8"  # JPEG Start Of Image
         EOI = b"\xff\xd9"  # JPEG End Of Image
         buf = b""
+        frame_count = 0
 
         logger.info("[%s] Frame producer started (scrcpy raw stream)", self.serial)
 
@@ -119,10 +120,18 @@ class ScreenStreamer:
                 break
 
             if not chunk:
+                # Check if FFmpeg died
+                if ffmpeg.poll() is not None:
+                    logger.error("FFmpeg process died unexpectedly")
+                    break
                 await asyncio.sleep(0.01)
                 continue
 
             buf += chunk
+            
+            # Log every 100 chunks received
+            if len(buf) > 0 and frame_count % 100 == 0:
+                logger.debug("Received %d bytes, buffer size: %d", len(chunk), len(buf))
 
             # Extract complete JPEG frames from buffer
             while True:
@@ -138,6 +147,11 @@ class ScreenStreamer:
 
                 frame = buf[start: end + 2]
                 buf = buf[end + 2:]
+                frame_count += 1
+
+                # Log first frame and every 30 frames
+                if frame_count == 1 or frame_count % 30 == 0:
+                    logger.info("Frame %d: %d bytes", frame_count, len(frame))
 
                 # Strip EXIF/GPS metadata for privacy
                 clean_frame = strip_exif_from_frame(frame)
@@ -152,6 +166,8 @@ class ScreenStreamer:
                         except Exception:
                             dead.add(ws)
                     self._clients -= dead
+        
+        logger.error("Frame producer loop exited - no more frames")
 
     # ── aiohttp WebSocket handler ─────────────────────────────────────────────
 
