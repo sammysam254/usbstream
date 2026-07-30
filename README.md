@@ -13,10 +13,17 @@ Stream and **remotely control** any Android device's screen over USB with automa
 
 **You only need ONE file to get started:**
 
-### **[📥 Download install.bat](https://raw.githubusercontent.com/sammysam254/usbstream/main/install.bat)**
+### **[📥 Click Here to Download install.bat](https://github.com/sammysam254/usbstream/releases/latest/download/install.bat)**
+
+> **Note:** If the link above doesn't work yet, use this alternative:
+> - Go to https://github.com/sammysam254/usbstream
+> - Click the green **Code** button
+> - Click **Download ZIP**
+> - Extract the ZIP file
+> - Run `install.bat` from the extracted folder
 
 **How to use:**
-1. **Right-click** the link above → **Save Link As...** → Save as `install.bat`
+1. **Click** the download link above (saves `install.bat` directly to your Downloads folder)
 2. **Double-click** `install.bat` to run it
 3. **Done!** — It will:
    - Download Python, ADB, scrcpy, FFmpeg, cloudflared automatically
@@ -25,13 +32,6 @@ Stream and **remotely control** any Android device's screen over USB with automa
    - Give you a cloudflared URL to access remotely
 
 **That's it!** Open the cloudflared URL in any browser and you'll see your device screen with full touch control.
-
-> **Alternative:** You can also get `install.bat` by cloning this repo:
-> ```bash
-> git clone https://github.com/sammysam254/usbstream.git
-> cd usbstream
-> install.bat
-> ```
 
 ---
 
