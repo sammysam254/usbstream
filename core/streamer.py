@@ -166,8 +166,16 @@ class ScreenStreamer:
             event_type = event.get("type")
             
             if event_type == "touch":
-                x = int(event.get("x", 0))
-                y = int(event.get("y", 0))
+                x = event.get("x")
+                y = event.get("y")
+                
+                # Validate coordinates
+                if x is None or y is None:
+                    logger.warning("Invalid touch event - missing coordinates")
+                    return
+                    
+                x = int(x)
+                y = int(y)
                 action = event.get("action", "tap")
                 
                 if action == "tap":
@@ -203,6 +211,8 @@ class ScreenStreamer:
                     
         except json.JSONDecodeError:
             logger.warning("Invalid JSON in control event")
+        except ValueError as e:
+            logger.error("Control event value error: %s", e)
         except Exception as e:
             logger.error("Control event processing error: %s", e)
 
