@@ -53,9 +53,9 @@ class ScreenStreamer:
         Start scrcpy with raw video output piped to FFmpeg for JPEG conversion.
         Optimized for MediaTek/low-end hardware (Samsung A04, etc).
         """
-        # Extract width from max_size (e.g., "1280x720" → "960")
-        # Use lower resolution for MediaTek chipsets
-        width = self.max_size.split('x')[0] if 'x' in self.max_size else "960"
+        # Force 960 resolution for MediaTek chipsets (Helio P35)
+        # Entry-level hardware encoders can't handle 1280+ on stdout pipe
+        width = "960"
         
         # Lower bitrate for entry-level hardware encoders
         bitrate = "2M"  # MediaTek Helio P35 works better at 2M than 4M
@@ -96,8 +96,8 @@ class ScreenStreamer:
                         if not line:
                             break
                         line_str = line.decode('utf-8', errors='ignore').strip()
-                        if line_str and 'INFO' not in line_str:
-                            logger.debug("scrcpy: %s", line_str)
+                        if line_str:
+                            logger.warning("scrcpy: %s", line_str)
                     except Exception:
                         break
             
