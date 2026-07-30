@@ -1,8 +1,8 @@
 """
-Screen streamer — captures live frames from Android device via scrcpy,
+Screen streamer — captures live frames from Android device via ADB screencap,
 encodes to JPEG, strips EXIF, and broadcasts over WebSocket with bidirectional control.
 
-Uses scrcpy --record=- (H.264 to stdout) for fastest possible streaming performance.
+Uses fast ADB screencap method that works with all scrcpy versions.
 Served via aiohttp on a single unified port (HTTP UI at / and WS at /ws).
 """
 import asyncio
@@ -36,139 +36,95 @@ class ScreenStreamer:
         self.max_size = max_size
         self.bit_rate = bit_rate
         self.fps      = fps
+        self.target_fps = fps
 
         self._clients: Set[web.WebSocketResponse] = set()
         self._running  = False
         self._last_frame: Optional[bytes] = None
-        self._scrcpy_proc: Optional[subprocess.Popen] = None
-        self._ffmpeg_proc: Optional[subprocess.Popen] = None
 
         # Path to the UI static files
         self._ui_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "ui")
 
-    # ── scrcpy raw stream capture ─────────────────────────────────────────────
+    # ── Fast frame capture via ADB screencap ──────────────────────────────────
 
-    def _start_scrcpy(self) -> subprocess.Popen:
+    def _capture_frame(self) -> Optional[bytes]:
         """
-        Launch scrcpy to output H.264 stream to stdout.
-        Uses --record=- with mkv container to pipe video to FFmpeg.
-        Compatible with scrcpy 4.x
+        Capture single frame via ADB screencap and convert to JPEG with FFmpeg.
+        Fast and reliable method that works with all devices.
         """
-        size_num = self.max_size.split('x')[0]
-        cmd = [
-            "scrcpy",
-            "-s", self.serial,
-            "--video-codec=h264",
-            f"--max-size={size_num}",
-            f"--video-bit-rate={self.bit_rate}",
-            f"--max-fps={self.fps}",
-            "--no-audio",
-            "--video-source=display",    # scrcpy 4.x way to specify display source
-            "--record=-",                # Output to stdout
-            "--record-format=mkv",       # MKV container with H.264 (supported in 4.x)
-            "--no-window",               # Don't show scrcpy window
-        ]
-        logger.info("Starting scrcpy: %s", " ".join(cmd))
-        return subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        try:
+            # Capture PNG via ADB
+            p1 = subprocess.run(
+                ["adb", "-s", self.serial, "exec-out", "screencap", "-p"],
+                capture_output=True,
+                timeout=2
+            )
+            if not p1.stdout or len(p1.stdout) < 100:
+                return None
 
-    def _start_ffmpeg(self, h264_input) -> subprocess.Popen:
-        """
-        Convert scrcpy's MKV stream to MJPEG frames for WebSocket transmission.
-        FFmpeg auto-detects MKV format.
-        """
-        cmd = [
-            "ffmpeg",
-            "-loglevel", "error",        # Show errors
-            "-i", "pipe:0",              # Auto-detect MKV format
-            "-f", "mjpeg",
-            "-q:v", "3",
-            "pipe:1",
-        ]
-        return subprocess.Popen(
-            cmd,
-            stdin=h264_input,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,      # Capture errors
-        )
+            # Convert PNG to JPEG and resize
+            width = self.max_size.split('x')[0]
+            p2 = subprocess.run(
+                ["ffmpeg", "-loglevel", "quiet", "-i", "pipe:0",
+                 "-vf", f"scale={width}:-1", "-f", "mjpeg", "-q:v", "5", "pipe:1"],
+                input=p1.stdout,
+                capture_output=True,
+                timeout=2
+            )
+            if not p2.stdout or len(p2.stdout) < 100:
+                return None
 
-    # ── MJPEG frame producer loop ─────────────────────────────────────────────
+            # Strip EXIF metadata
+            return strip_exif_from_frame(p2.stdout)
+        except Exception as e:
+            logger.debug("Frame capture error: %s", e)
+            return None
+
+    # ── Frame producer loop ───────────────────────────────────────────────────
 
     async def _frame_producer(self):
         """
-        Read MJPEG frames from FFmpeg, strip EXIF, cache latest frame,
-        and broadcast to all connected WebSocket clients.
+        Continuously capture frames via ADB screencap and broadcast to clients.
+        Simple and reliable method that works with all devices.
         """
         loop = asyncio.get_event_loop()
-        ffmpeg = self._ffmpeg_proc
-
-        SOI = b"\xff\xd8"  # JPEG Start Of Image
-        EOI = b"\xff\xd9"  # JPEG End Of Image
-        buf = b""
         frame_count = 0
+        frame_delay = 1.0 / self.target_fps  # Target delay between frames
 
-        logger.info("[%s] Frame producer started (scrcpy raw stream)", self.serial)
+        logger.info("[%s] Frame producer started (ADB screencap method)", self.serial)
 
         while self._running:
-            try:
-                chunk = await loop.run_in_executor(None, ffmpeg.stdout.read, 65536)
-            except Exception as e:
-                logger.error("Frame read error: %s", e)
-                break
-
-            if not chunk:
-                # Check if FFmpeg died
-                if ffmpeg.poll() is not None:
-                    stderr = ffmpeg.stderr.read().decode('utf-8', errors='ignore')
-                    logger.error("FFmpeg process died. Error: %s", stderr)
-                    break
-                await asyncio.sleep(0.01)
-                continue
-
-            buf += chunk
+            frame_start = asyncio.get_event_loop().time()
             
-            # Log every 100 chunks received
-            if len(buf) > 0 and frame_count % 100 == 0:
-                logger.debug("Received %d bytes, buffer size: %d", len(chunk), len(buf))
-
-            # Extract complete JPEG frames from buffer
-            while True:
-                start = buf.find(SOI)
-                if start == -1:
-                    buf = b""
-                    break
-
-                end = buf.find(EOI, start + 2)
-                if end == -1:
-                    buf = buf[start:]  # Keep partial frame
-                    break
-
-                frame = buf[start: end + 2]
-                buf = buf[end + 2:]
+            # Capture frame in executor to avoid blocking
+            frame = await loop.run_in_executor(None, self._capture_frame)
+            
+            if frame:
                 frame_count += 1
+                self._last_frame = frame
 
-                # Log first frame and every 30 frames
-                if frame_count == 1 or frame_count % 30 == 0:
-                    logger.info("Frame %d: %d bytes", frame_count, len(frame))
-
-                # Strip EXIF/GPS metadata for privacy
-                clean_frame = strip_exif_from_frame(frame)
-                self._last_frame = clean_frame
+                # Log first and periodic frames
+                if frame_count == 1:
+                    logger.info("First frame captured: %d bytes", len(frame))
+                elif frame_count % 100 == 0:
+                    logger.info("Frame %d: streaming at ~%d fps", frame_count, self.target_fps)
 
                 # Broadcast to all connected clients
                 if self._clients:
                     dead = set()
                     for ws in list(self._clients):
                         try:
-                            await ws.send_bytes(clean_frame)
+                            await ws.send_bytes(frame)
                         except Exception:
                             dead.add(ws)
                     self._clients -= dead
+            
+            # Maintain target FPS
+            frame_time = asyncio.get_event_loop().time() - frame_start
+            sleep_time = max(0, frame_delay - frame_time)
+            await asyncio.sleep(sleep_time)
         
-        logger.error("Frame producer loop exited - no more frames")
+        logger.info("Frame producer stopped")
 
     # ── aiohttp WebSocket handler ─────────────────────────────────────────────
 
@@ -258,42 +214,9 @@ class ScreenStreamer:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def _reset_adb_connection(self):
-        """
-        Reset ADB to prevent stuck daemon issues (80% of connection failures).
-        Kills server and restarts to ensure clean connection.
-        """
-        logger.info("Resetting ADB connection...")
-        try:
-            # Kill any hung ADB instances
-            subprocess.run(["adb", "kill-server"], capture_output=True, timeout=5)
-            # Restart and verify device
-            subprocess.run(["adb", "start-server"], capture_output=True, timeout=5)
-            result = subprocess.run(["adb", "devices"], capture_output=True, timeout=5, text=True)
-            logger.info("ADB devices after reset:\n%s", result.stdout)
-        except Exception as e:
-            logger.warning("ADB reset failed: %s", e)
-
     async def start(self):
-        """Start scrcpy, ffmpeg, aiohttp server, and frame producer."""
+        """Start aiohttp server and frame producer using ADB screencap."""
         self._running = True
-
-        # Reset ADB connection first to prevent stuck daemon issues
-        self._reset_adb_connection()
-
-        # Start scrcpy H.264 stream to stdout
-        self._scrcpy_proc = self._start_scrcpy()
-        await asyncio.sleep(2.0)  # Give scrcpy time to negotiate with device
-        
-        # Check if scrcpy is running
-        if self._scrcpy_proc.poll() is not None:
-            stderr_output = self._scrcpy_proc.stderr.read().decode('utf-8', errors='ignore')
-            logger.error("scrcpy failed to start. Error output:")
-            logger.error(stderr_output)
-            raise RuntimeError(f"scrcpy process exited immediately: {stderr_output[:200]}")
-
-        # Start FFmpeg to convert H.264 → MJPEG
-        self._ffmpeg_proc = self._start_ffmpeg(self._scrcpy_proc.stdout)
 
         # Start aiohttp HTTP + WebSocket server
         app = web.Application()
@@ -310,19 +233,12 @@ class ScreenStreamer:
             "HTTP+WebSocket server listening on http://%s:%d (WS at /ws)",
             self.ws_host, self.ws_port,
         )
-        logger.info("Using scrcpy --record=- (H.264 to stdout)")
-        logger.info("Frame settings: %s @ %d fps, bitrate %s", self.max_size, self.fps, self.bit_rate)
+        logger.info("Using fast ADB screencap method (works with all devices)")
+        logger.info("Target: %d fps, resolution: %s", self.target_fps, self.max_size)
 
         self._runner = runner
         await self._frame_producer()
 
     def stop(self):
-        """Stop all streaming processes."""
+        """Stop frame producer."""
         self._running = False
-        for proc in (self._ffmpeg_proc, self._scrcpy_proc):
-            if proc:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=2)
-                except Exception:
-                    pass
